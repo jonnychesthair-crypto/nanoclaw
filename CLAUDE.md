@@ -40,9 +40,12 @@ Four types of skills exist in NanoClaw. See [CONTRIBUTING.md](CONTRIBUTING.md) f
 | `/customize` | Adding channels, integrations, changing behavior |
 | `/debug` | Container issues, logs, troubleshooting |
 | `/update-nanoclaw` | Bring upstream NanoClaw updates into a customized install |
+| `/migrate-nanoclaw` | Major version bumps (1.x → 2.x).  Replays customizations on clean upstream. |
 | `/init-onecli` | Install OneCLI Agent Vault and migrate `.env` credentials to it |
 | `/qodo-pr-resolver` | Fetch and fix Qodo PR review issues interactively or in batch |
 | `/get-qodo-rules` | Load org- and repo-level coding rules from Qodo before code tasks |
+
+**Major-version upgrades MUST use `/migrate-nanoclaw`, not `git merge upstream/main`** -- the architectural rewrite makes a 3-way merge meaningless and destroys customizations.
 
 ## Contributing
 
