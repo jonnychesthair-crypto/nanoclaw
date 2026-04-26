@@ -333,10 +333,11 @@ If a user wants tasks running more than ~2x daily and a script can't reduce agen
 
 ## Current Infrastructure State (2026-04-26)
 
-- **Customizations committed**: 10 commits + 1 drift-check script.  HEAD b73472c.
+- **Customizations committed**: ~17 commits since last upstream merge (1130633).  Canonical state: `pre-v2-migration` tag (advances with each prep commit).
 - **Tags**: `pre-v2-migration` (canonical, advances with prep work), `pre-v2-migration-1130633-20260426-115723` (immovable safety rollback target).
 - **Weekly drift cron**: `~/nanoclaw/scripts/upstream-drift-check.sh`, Mondays 9am CST nominal.  Output: GitHub issues on jonnychesthair-crypto/nanoclaw with the `drift-report` label.  First report: https://github.com/jonnychesthair-crypto/nanoclaw/issues/1 .
 - **Upstream gap**: 795 commits behind, 7 [BREAKING] entries unmerged.  v2 migration deliberately on hold until 2.0.x stabilizes.
-- **Backup**: 405 local commits not yet pushed to origin/main.  Deferred deliberately; not a blocker.
-- **Pending work**: convert 4 in-core MCP servers (calendar, drive, dropbox, regrid) to /add-*-tool installable feature skills under `origin/skill/<name>-tool`.  Reduces drift conflict surface.
-- **Upgrade rule**: Major version bumps require /migrate-nanoclaw, never `git merge upstream/main`.  See ~/nanoclaw/CLAUDE.md upgrade-discipline note.
+- **Backup**: 405+ local commits not yet pushed to origin/main.  Deferred deliberately; not a blocker.
+- **MCP skill conversions complete**: regrid, calendar, drive, dropbox all have installable `/add-*-tool` docs on main and source branches at `origin/skill/<name>-tool`.  Pre-flight in each SKILL.md detects existing install and short-circuits.  Local install unchanged.
+- **Known wrinkle worth eyeballing**: calendar/drive wiring in `container/agent-runner/src/index.ts` sets `HOME=/workspace/group`, but OAuth files live at host `~/.calendar-mcp/` and `~/.drive-mcp/` with no mount in `src/container-runner.ts`.  Calendar/drive may be partially non-functional in the container.  Verify next time you query a calendar event or Drive file.
+- **Upgrade rule**: Major version bumps require `/migrate-nanoclaw`, never `git merge upstream/main`.  See ~/nanoclaw/CLAUDE.md upgrade-discipline note.
