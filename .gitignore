@@ -40,5 +40,5 @@ agents-sdk-docs
 # Compiled binaries / runtime artifacts (source lives in skill dirs / repos)
 nanoclaw.db
 rclone-current-linux-amd64.zip
-whisper-server/
+whisper-server
 container/dropbox-mcp-server
