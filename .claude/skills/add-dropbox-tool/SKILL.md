@@ -112,11 +112,7 @@ DROPBOX_REFRESH_TOKEN=<REFRESH_TOKEN>
 DROPBOX_ACCESS_TOKEN=<short-lived; populated by refresh script>
 ```
 
-Sync to container env:
-
-```bash
-mkdir -p data/env && cp .env data/env/env
-```
+No additional sync step needed on Power Glove -- `src/container-runner.ts` forwards the `DROPBOX_*` vars to the container via docker `-e` flags from the running service's process env.  See the host `CLAUDE.md` "Power Glove env injection" note for the upstream-vs-fork divergence.
 
 ### 2d. Install the refresh cron
 

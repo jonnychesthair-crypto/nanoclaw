@@ -112,11 +112,7 @@ By default the MCP queries the user's primary calendar.  To include additional c
 echo 'CALENDAR_IDS=primary,family@group.calendar.google.com,work@example.com' >> .env
 ```
 
-Sync to container env:
-
-```bash
-mkdir -p data/env && cp .env data/env/env
-```
+No additional sync step needed on Power Glove -- `src/container-runner.ts` forwards `CALENDAR_IDS` to the container via docker `-e` flags from the running service's process env.  See the host `CLAUDE.md` "Power Glove env injection" note.
 
 Write operations always target `primary`.
 

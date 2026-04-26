@@ -25,6 +25,14 @@ Single Node.js process with skill-based channel system. Channels (WhatsApp, Tele
 
 API keys, secret keys, OAuth tokens, and auth credentials are managed by the OneCLI gateway — which handles secret injection into containers at request time, so no keys or tokens are ever passed to containers directly. Run `onecli --help`.
 
+### Power Glove env injection (fork divergence from upstream)
+
+Power Glove additionally passes third-party API credentials (`DROPBOX_*`, `CALENDAR_IDS`, `REGRID_API_TOKEN`, `EBAY_*`, etc.) into containers via docker `-e` flags directly from the running service's `process.env`.  The systemd unit (`~/.config/systemd/user/nanoclaw.service`) loads `.env` via `EnvironmentFile=`, and `src/container-runner.ts` (lines ~274-330) chooses which env vars to forward.
+
+This diverges from upstream nanoclaw's pattern, which uses a `data/env/env` file mount.  On Power Glove the `data/env/env` file is unused -- instructions to `cp .env data/env/env` in upstream-inherited skills (`/add-discord`, `/add-emacs`, `/add-slack`, `/add-telegram`, `/add-voice-transcription`, `/add-whatsapp`) are no-ops here and can be ignored.
+
+When adding a new env-var-driven MCP server or channel on Power Glove: edit `src/container-runner.ts` to forward the new var via `args.push('-e', ...)`, NOT `data/env/env`.
+
 ## Skills
 
 Four types of skills exist in NanoClaw. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full taxonomy and guidelines.

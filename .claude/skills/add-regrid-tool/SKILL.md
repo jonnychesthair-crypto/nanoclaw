@@ -66,11 +66,7 @@ npm run build
    REGRID_API_TOKEN=<your-token>
    ```
 
-4. Sync to the container env directory if your container-runner uses one:
-
-   ```bash
-   mkdir -p data/env && cp .env data/env/env
-   ```
+4. No additional sync step needed on Power Glove.  `src/container-runner.ts` injects env vars into the container via docker `-e` flags from the running nanoclaw service's process env (which systemd loads from `.env`).  See the host `CLAUDE.md` "Power Glove env injection" note for context, including the upstream-vs-fork divergence.
 
 ## Phase 3: Restart
 
