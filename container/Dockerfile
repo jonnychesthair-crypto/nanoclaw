@@ -22,13 +22,31 @@ RUN apt-get update && apt-get install -y \
     libcups2 \
     libdrm2 \
     libxshmfence1 \
+    ffmpeg \
     curl \
     git \
+    poppler-utils \
+    pandoc \
+    libreoffice-nogui \
+    python3-pip \
+    build-essential \
+    python3-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# Install MemPalace (verbatim conversation memory with ChromaDB vector search)
+RUN pip3 install --break-system-packages mempalace
 
 # Set Chromium path for agent-browser
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
+
+# Install pdf-reader CLI tool
+COPY skills/pdf-reader/pdf-reader /usr/local/bin/pdf-reader
+RUN chmod +x /usr/local/bin/pdf-reader
+
+# Install Dropbox MCP server
+COPY dropbox-mcp-server /usr/local/bin/dropbox-mcp-server
+RUN chmod +x /usr/local/bin/dropbox-mcp-server
 
 # Install agent-browser and claude-code globally
 RUN npm install -g agent-browser @anthropic-ai/claude-code
