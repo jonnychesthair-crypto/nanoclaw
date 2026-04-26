@@ -68,6 +68,48 @@ server.tool(
 );
 
 server.tool(
+  'send_file',
+  'Send a file (PDF, document, spreadsheet, image, etc.) to the user or group via Telegram. The file must be in /workspace/group/. Create the file first, then call this tool to send it.',
+  {
+    file_path: z.string().describe('Path to the file inside the container (must be under /workspace/group/)'),
+    file_name: z.string().describe('Display name for the file (e.g., "Report.pdf", "Data.xlsx")'),
+    caption: z.string().optional().describe('Optional caption text to accompany the file'),
+  },
+  async (args) => {
+    // Validate the file exists
+    if (!fs.existsSync(args.file_path)) {
+      return {
+        content: [{ type: 'text' as const, text: `File not found: ${args.file_path}` }],
+        isError: true,
+      };
+    }
+
+    // Security: must be under /workspace/group/
+    const resolved = path.resolve(args.file_path);
+    if (!resolved.startsWith('/workspace/group/')) {
+      return {
+        content: [{ type: 'text' as const, text: 'File must be under /workspace/group/' }],
+        isError: true,
+      };
+    }
+
+    const data: Record<string, string | undefined> = {
+      type: 'send_file',
+      chatJid,
+      filePath: resolved,
+      fileName: args.file_name,
+      caption: args.caption || undefined,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(TASKS_DIR, data);
+
+    return { content: [{ type: 'text' as const, text: `File "${args.file_name}" queued for sending.` }] };
+  },
+);
+
+server.tool(
   'schedule_task',
   `Schedule a recurring or one-time task. The task will run as a full agent with access to all tools. Returns the task ID for future reference. To modify an existing task, use update_task instead.
 

@@ -3,7 +3,7 @@ import path from 'path';
 
 import { CronExpressionParser } from 'cron-parser';
 
-import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
+import { DATA_DIR, GROUPS_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
 import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
@@ -12,6 +12,12 @@ import { RegisteredGroup } from './types.js';
 
 export interface IpcDeps {
   sendMessage: (jid: string, text: string) => Promise<void>;
+  sendFile: (
+    jid: string,
+    filePath: string,
+    fileName: string,
+    caption?: string,
+  ) => Promise<void>;
   registeredGroups: () => Record<string, RegisteredGroup>;
   registerGroup: (jid: string, group: RegisteredGroup) => void;
   syncGroups: (force: boolean) => Promise<void>;
@@ -173,6 +179,10 @@ export async function processTaskIpc(
     trigger?: string;
     requiresTrigger?: boolean;
     containerConfig?: RegisteredGroup['containerConfig'];
+    // For send_file
+    filePath?: string;
+    fileName?: string;
+    caption?: string;
   },
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
@@ -459,6 +469,49 @@ export async function processTaskIpc(
           { data },
           'Invalid register_group request - missing required fields',
         );
+      }
+      break;
+
+    case 'send_file':
+      if (data.chatJid && data.filePath && data.fileName) {
+        const targetGroup = registeredGroups[data.chatJid];
+        if (isMain || (targetGroup && targetGroup.folder === sourceGroup)) {
+          // Map container path (/workspace/group/...) to host path
+          const containerPrefix = '/workspace/group/';
+          const filePath = data.filePath.startsWith(containerPrefix)
+            ? data.filePath.slice(containerPrefix.length)
+            : data.filePath;
+          const groupDir = path.resolve(GROUPS_DIR, sourceGroup);
+          const resolvedPath = path.resolve(groupDir, filePath);
+          if (!resolvedPath.startsWith(groupDir)) {
+            logger.warn(
+              {
+                filePath: data.filePath,
+                sourceGroup,
+                groupDir,
+                resolvedPath,
+                GROUPS_DIR,
+              },
+              'send_file path outside group workspace blocked',
+            );
+            break;
+          }
+          await deps.sendFile(
+            data.chatJid,
+            resolvedPath,
+            data.fileName,
+            data.caption,
+          );
+          logger.info(
+            { chatJid: data.chatJid, fileName: data.fileName, sourceGroup },
+            'IPC file sent',
+          );
+        } else {
+          logger.warn(
+            { chatJid: data.chatJid, sourceGroup },
+            'Unauthorized IPC send_file attempt blocked',
+          );
+        }
       }
       break;
 

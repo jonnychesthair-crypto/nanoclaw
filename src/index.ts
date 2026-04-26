@@ -5,6 +5,7 @@ import { OneCLI } from '@onecli-sh/sdk';
 
 import {
   ASSISTANT_NAME,
+  CONTAINER_TIMEOUT,
   DEFAULT_TRIGGER,
   getTriggerPattern,
   GROUPS_DIR,
@@ -28,6 +29,7 @@ import {
 import {
   cleanupOrphans,
   ensureContainerRuntimeRunning,
+  reapStaleContainers,
 } from './container-runtime.js';
 import {
   getAllChats,
@@ -394,8 +396,10 @@ async function runAgent(
         isMain,
         assistantName: ASSISTANT_NAME,
       },
-      (proc, containerName) =>
-        queue.registerProcess(chatJid, proc, containerName, group.folder),
+      (proc, containerName, resetTimeout) => {
+        queue.registerProcess(chatJid, proc, containerName, group.folder);
+        queue.setIpcWriteCallback(chatJid, resetTimeout);
+      },
       wrappedOnOutput,
     );
 
@@ -688,8 +692,15 @@ async function main(): Promise<void> {
       );
       continue;
     }
-    channels.push(channel);
-    await channel.connect();
+    try {
+      await channel.connect();
+      channels.push(channel);
+    } catch (err) {
+      logger.error(
+        { channel: channelName, err },
+        'Channel failed to connect — continuing without it',
+      );
+    }
   }
   if (channels.length === 0) {
     logger.fatal('No channels connected');
@@ -701,8 +712,10 @@ async function main(): Promise<void> {
     registeredGroups: () => registeredGroups,
     getSessions: () => sessions,
     queue,
-    onProcess: (groupJid, proc, containerName, groupFolder) =>
-      queue.registerProcess(groupJid, proc, containerName, groupFolder),
+    onProcess: (groupJid, proc, containerName, groupFolder, resetTimeout) => {
+      queue.registerProcess(groupJid, proc, containerName, groupFolder);
+      if (resetTimeout) queue.setIpcWriteCallback(groupJid, resetTimeout);
+    },
     sendMessage: async (jid, rawText) => {
       const channel = findChannel(channels, jid);
       if (!channel) {
@@ -720,6 +733,15 @@ async function main(): Promise<void> {
       const text = formatOutbound(rawText, channel.name as ChannelType);
       if (!text) return Promise.resolve();
       return channel.sendMessage(jid, text);
+    },
+    sendFile: (jid, filePath, fileName, caption) => {
+      const channel = findChannel(channels, jid);
+      if (!channel) throw new Error(`No channel for JID: ${jid}`);
+      if (!channel.sendFile)
+        throw new Error(
+          `Channel ${channel.name} does not support file sending`,
+        );
+      return channel.sendFile(jid, filePath, fileName, caption);
     },
     registeredGroups: () => registeredGroups,
     registerGroup,
@@ -751,6 +773,13 @@ async function main(): Promise<void> {
     },
   });
   startSessionCleanup();
+
+  // Safety net: periodically reap containers that outlived their timers.
+  // Catches cases where in-memory setTimeout is lost (process crash, etc.).
+  // Max age = IDLE_TIMEOUT + CONTAINER_TIMEOUT (both default 30min = 60min max).
+  const maxContainerAge = IDLE_TIMEOUT + CONTAINER_TIMEOUT;
+  setInterval(() => reapStaleContainers(maxContainerAge), 5 * 60_000);
+
   queue.setProcessMessagesFn(processGroupMessages);
   recoverPendingMessages();
   startMessageLoop().catch((err) => {

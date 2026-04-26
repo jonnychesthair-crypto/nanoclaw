@@ -5,6 +5,7 @@
 import { execSync } from 'child_process';
 import os from 'os';
 
+import { CONTAINER_PREFIX } from './config.js';
 import { logger } from './logger.js';
 
 /** The container runtime binary name. */
@@ -75,11 +76,11 @@ export function ensureContainerRuntimeRunning(): void {
   }
 }
 
-/** Kill orphaned NanoClaw containers from previous runs. */
+/** Kill orphaned containers from previous runs of THIS instance. */
 export function cleanupOrphans(): void {
   try {
     const output = execSync(
-      `${CONTAINER_RUNTIME_BIN} ps --filter name=nanoclaw- --format '{{.Names}}'`,
+      `${CONTAINER_RUNTIME_BIN} ps --filter name=${CONTAINER_PREFIX}- --format '{{.Names}}'`,
       { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' },
     );
     const orphans = output.trim().split('\n').filter(Boolean);
@@ -98,5 +99,43 @@ export function cleanupOrphans(): void {
     }
   } catch (err) {
     logger.warn({ err }, 'Failed to clean up orphaned containers');
+  }
+}
+
+/**
+ * Kill containers from this instance that exceed maxAgeMs.
+ * Safety net for lost in-memory timers (process crash, restart, etc.).
+ * Does NOT touch other instances' containers.
+ */
+export function reapStaleContainers(maxAgeMs: number): void {
+  try {
+    const output = execSync(
+      `${CONTAINER_RUNTIME_BIN} ps --filter name=${CONTAINER_PREFIX}- --format '{{.Names}} {{.CreatedAt}}'`,
+      { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' },
+    );
+    const lines = output.trim().split('\n').filter(Boolean);
+    const now = Date.now();
+    for (const line of lines) {
+      // Format: "nc-power-glove-telegram-main-1776295315595 2026-04-15 23:21:55 +0000 UTC"
+      // Extract the epoch timestamp from the container name (last segment before the space)
+      const name = line.split(' ')[0];
+      const tsMatch = name.match(/-(\d{13})$/);
+      if (!tsMatch) continue;
+      const createdAt = parseInt(tsMatch[1], 10);
+      const age = now - createdAt;
+      if (age > maxAgeMs) {
+        logger.warn(
+          { name, ageMinutes: Math.round(age / 60_000) },
+          'Reaping stale container (exceeded max age)',
+        );
+        try {
+          stopContainer(name);
+        } catch {
+          /* already stopped */
+        }
+      }
+    }
+  } catch {
+    // Non-fatal
   }
 }

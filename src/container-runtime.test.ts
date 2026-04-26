@@ -10,6 +10,11 @@ vi.mock('./logger.js', () => ({
   },
 }));
 
+// Mock config to provide a stable CONTAINER_PREFIX for tests
+vi.mock('./config.js', () => ({
+  CONTAINER_PREFIX: 'nc-test',
+}));
+
 // Mock child_process — store the mock fn so tests can configure it
 const mockExecSync = vi.fn();
 vi.mock('child_process', () => ({
@@ -92,10 +97,10 @@ describe('ensureContainerRuntimeRunning', () => {
 // --- cleanupOrphans ---
 
 describe('cleanupOrphans', () => {
-  it('stops orphaned nanoclaw containers', () => {
+  it('stops orphaned containers matching this instance prefix', () => {
     // docker ps returns container names, one per line
     mockExecSync.mockReturnValueOnce(
-      'nanoclaw-group1-111\nnanoclaw-group2-222\n',
+      'nc-test-group1-111\nnc-test-group2-222\n',
     );
     // stop calls succeed
     mockExecSync.mockReturnValue('');
@@ -104,18 +109,24 @@ describe('cleanupOrphans', () => {
 
     // ps + 2 stop calls
     expect(mockExecSync).toHaveBeenCalledTimes(3);
+    // Verify the ps filter uses the instance prefix
+    expect(mockExecSync).toHaveBeenNthCalledWith(
+      1,
+      expect.stringContaining('--filter name=nc-test-'),
+      expect.any(Object),
+    );
     expect(mockExecSync).toHaveBeenNthCalledWith(
       2,
-      `${CONTAINER_RUNTIME_BIN} stop -t 1 nanoclaw-group1-111`,
+      `${CONTAINER_RUNTIME_BIN} stop -t 1 nc-test-group1-111`,
       { stdio: 'pipe' },
     );
     expect(mockExecSync).toHaveBeenNthCalledWith(
       3,
-      `${CONTAINER_RUNTIME_BIN} stop -t 1 nanoclaw-group2-222`,
+      `${CONTAINER_RUNTIME_BIN} stop -t 1 nc-test-group2-222`,
       { stdio: 'pipe' },
     );
     expect(logger.info).toHaveBeenCalledWith(
-      { count: 2, names: ['nanoclaw-group1-111', 'nanoclaw-group2-222'] },
+      { count: 2, names: ['nc-test-group1-111', 'nc-test-group2-222'] },
       'Stopped orphaned containers',
     );
   });
@@ -143,7 +154,7 @@ describe('cleanupOrphans', () => {
   });
 
   it('continues stopping remaining containers when one stop fails', () => {
-    mockExecSync.mockReturnValueOnce('nanoclaw-a-1\nnanoclaw-b-2\n');
+    mockExecSync.mockReturnValueOnce('nc-test-a-1\nnc-test-b-2\n');
     // First stop fails
     mockExecSync.mockImplementationOnce(() => {
       throw new Error('already stopped');
@@ -155,7 +166,7 @@ describe('cleanupOrphans', () => {
 
     expect(mockExecSync).toHaveBeenCalledTimes(3);
     expect(logger.info).toHaveBeenCalledWith(
-      { count: 2, names: ['nanoclaw-a-1', 'nanoclaw-b-2'] },
+      { count: 2, names: ['nc-test-a-1', 'nc-test-b-2'] },
       'Stopped orphaned containers',
     );
   });

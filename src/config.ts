@@ -41,6 +41,15 @@ export const STORE_DIR = path.resolve(PROJECT_ROOT, 'store');
 export const GROUPS_DIR = path.resolve(PROJECT_ROOT, 'groups');
 export const DATA_DIR = path.resolve(PROJECT_ROOT, 'data');
 
+// Per-instance container name prefix derived from ASSISTANT_NAME.
+// Prevents cross-instance interference when multiple bots share a host
+// (e.g. cleanupOrphans killing another bot's containers).
+export const CONTAINER_PREFIX =
+  'nc-' +
+  ASSISTANT_NAME.toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/-+$/, '');
+
 export const CONTAINER_IMAGE =
   process.env.CONTAINER_IMAGE || 'nanoclaw-agent:latest';
 export const CONTAINER_TIMEOUT = parseInt(

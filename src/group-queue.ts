@@ -25,6 +25,7 @@ interface GroupState {
   containerName: string | null;
   groupFolder: string | null;
   retryCount: number;
+  onIpcWrite: (() => void) | null;
 }
 
 export class GroupQueue {
@@ -49,6 +50,7 @@ export class GroupQueue {
         containerName: null,
         groupFolder: null,
         retryCount: 0,
+        onIpcWrite: null,
       };
       this.groups.set(groupJid, state);
     }
@@ -142,6 +144,16 @@ export class GroupQueue {
   }
 
   /**
+   * Register a callback that fires when an IPC message is written to the
+   * active container.  The container-runner uses this to reset its hard
+   * timeout so an incoming message doesn't race with an expiring timer.
+   */
+  setIpcWriteCallback(groupJid: string, cb: (() => void) | null): void {
+    const state = this.getGroup(groupJid);
+    state.onIpcWrite = cb;
+  }
+
+  /**
    * Mark the container as idle-waiting (finished work, waiting for IPC input).
    * If tasks are pending, preempt the idle container immediately.
    */
@@ -171,6 +183,7 @@ export class GroupQueue {
       const tempPath = `${filepath}.tmp`;
       fs.writeFileSync(tempPath, JSON.stringify({ type: 'message', text }));
       fs.renameSync(tempPath, filepath);
+      if (state.onIpcWrite) state.onIpcWrite();
       return true;
     } catch {
       return false;
@@ -222,7 +235,36 @@ export class GroupQueue {
       logger.error({ groupJid, err }, 'Error processing messages for group');
       this.scheduleRetry(groupJid, state);
     } finally {
+      // Check for orphaned IPC messages that were written but never consumed
+      // by the container (e.g. message piped just before idle timeout killed it).
+      if (state.groupFolder) {
+        const inputDir = path.join(DATA_DIR, 'ipc', state.groupFolder, 'input');
+        try {
+          const files = fs
+            .readdirSync(inputDir)
+            .filter((f) => f.endsWith('.json') && !f.endsWith('.tmp'));
+          if (files.length > 0) {
+            logger.info(
+              { groupJid, orphanedFiles: files.length },
+              'Orphaned IPC messages found after container exit, requeueing',
+            );
+            // Clean up the orphaned files so the next container doesn't
+            // double-process them -- the messages will be re-pulled from the DB.
+            for (const f of files) {
+              try {
+                fs.unlinkSync(path.join(inputDir, f));
+              } catch {
+                /* ignore */
+              }
+            }
+            state.pendingMessages = true;
+          }
+        } catch {
+          // Directory may not exist, that's fine
+        }
+      }
       state.active = false;
+      state.onIpcWrite = null;
       state.process = null;
       state.containerName = null;
       state.groupFolder = null;
@@ -252,6 +294,7 @@ export class GroupQueue {
       state.active = false;
       state.isTaskContainer = false;
       state.runningTaskId = null;
+      state.onIpcWrite = null;
       state.process = null;
       state.containerName = null;
       state.groupFolder = null;
