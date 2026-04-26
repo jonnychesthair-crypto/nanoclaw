@@ -5,6 +5,8 @@ import { parseTextStyles, ChannelType } from './text-styles.js';
 export function escapeXml(s: string): string {
   if (!s) return '';
   return s
+    .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/g, '')
+    .replace(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
@@ -36,10 +38,29 @@ export function stripInternalTags(text: string): string {
   return text.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
 }
 
+/** Replace em/en dashes with hyphens and enforce double space after periods. */
+function enforceFormattingRules(text: string): string {
+  // Replace em dashes (—) and en dashes (–) with hyphens
+  let result = text.replace(/[\u2013\u2014]/g, '-');
+  // Enforce double space after periods, but preserve URLs intact.
+  // Split on URL-like tokens, only apply the rule to non-URL segments.
+  const urlPattern = /(https?:\/\/[^\s)>\]]+)/g;
+  const parts = result.split(urlPattern);
+  for (let i = 0; i < parts.length; i++) {
+    // Odd indices are URL matches from split-with-capture
+    if (i % 2 === 0) {
+      parts[i] = parts[i].replace(/\.( )(?=[A-Z])/g, '.  ');
+    }
+  }
+  result = parts.join('');
+  return result;
+}
+
 export function formatOutbound(rawText: string, channel?: ChannelType): string {
   const text = stripInternalTags(rawText);
   if (!text) return '';
-  return channel ? parseTextStyles(text, channel) : text;
+  const styled = channel ? parseTextStyles(text, channel) : text;
+  return enforceFormattingRules(styled);
 }
 
 export function routeOutbound(

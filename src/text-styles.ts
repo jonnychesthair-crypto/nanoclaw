@@ -97,9 +97,14 @@ export function parseSignalStyles(rawText: string): {
           const startOut = out.length;
           out += content;
           addStyle('MONOSPACE', startOut, out.length);
-          // Advance past \n``` + optional trailing newline
+          // Advance past \n``` + preserve trailing newline
           const afterClose = s.indexOf('\n', closeAt + 4);
-          i = afterClose !== -1 ? afterClose + 1 : n;
+          if (afterClose !== -1) {
+            out += '\n';
+            i = afterClose + 1;
+          } else {
+            i = n;
+          }
           continue;
         }
       }
@@ -281,7 +286,7 @@ interface Segment {
  */
 function splitProtectedRegions(text: string): Segment[] {
   const segments: Segment[] = [];
-  const CODE_PATTERN = /```[\s\S]*?```|`[^`\n]+`/g;
+  const CODE_PATTERN = /^```[^\n]*\n[\s\S]*?\n```$|`[^`\n]+`/gm;
 
   let lastIndex = 0;
   let match: RegExpExecArray | null;
@@ -326,9 +331,10 @@ function transformSegment(text: string, channel: ChannelType): string {
   // 4. Links
   if (channel === 'slack') {
     t = t.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<$2|$1>');
-  } else {
+  } else if (channel === 'whatsapp') {
     t = t.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1 ($2)');
   }
+  // Telegram: preserve [text](url) — Markdown v1 renders them natively
 
   // 5. Horizontal rules: strip them
   t = t.replace(/^(-{3,}|\*{3,}|_{3,})$/gm, '');
