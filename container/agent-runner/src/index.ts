@@ -21,8 +21,11 @@ import {
   query,
   HookCallback,
   PreCompactHookInput,
+  PostCompactHookInput,
 } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 interface ContainerInput {
   prompt: string;
@@ -201,6 +204,70 @@ function createPreCompactHook(assistantName?: string): HookCallback {
       log(
         `Failed to archive transcript: ${err instanceof Error ? err.message : String(err)}`,
       );
+    }
+
+    return {};
+  };
+}
+
+/**
+ * Re-inject critical context after compaction via IPC.
+ * Reads CLAUDE.md and CLAUDE-MEMORY.md, writes them as an IPC message
+ * so pollIpcDuringQuery picks them up and pushes into the active stream.
+ */
+function createPostCompactHook(): HookCallback {
+  return async (input, _toolUseId, _context) => {
+    const postCompact = input as PostCompactHookInput;
+    log(`PostCompact fired (trigger: ${postCompact.trigger})`);
+
+    try {
+      const parts: string[] = [];
+
+      // Re-inject group identity and rules
+      const claudeMdPath = '/workspace/group/CLAUDE.md';
+      if (fs.existsSync(claudeMdPath)) {
+        const content = fs.readFileSync(claudeMdPath, 'utf-8').trim();
+        if (content) parts.push(content);
+      }
+
+      // Re-inject memory state
+      const memoryMdPath = '/workspace/group/CLAUDE-MEMORY.md';
+      if (fs.existsSync(memoryMdPath)) {
+        const content = fs.readFileSync(memoryMdPath, 'utf-8').trim();
+        if (content) parts.push(`## Memory State\n\n${content}`);
+      }
+
+      if (parts.length === 0) {
+        log('PostCompact: no context files found to re-inject');
+        return {};
+      }
+
+      // Cap at 3000 chars to avoid bloating the context
+      let contextBlock = parts.join('\n\n---\n\n');
+      if (contextBlock.length > 3000) {
+        contextBlock = contextBlock.slice(0, 3000) + '\n...[truncated]...';
+      }
+
+      const message = [
+        '[Post-compaction context refresh]',
+        '',
+        'Session was just compacted.  The conversation summary above is a hint, NOT a substitute for your identity and rules.',
+        'Re-read the critical context below and continue from where you left off.',
+        '',
+        contextBlock,
+      ].join('\n');
+
+      // Write as IPC message so pollIpcDuringQuery picks it up
+      fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
+      const filename = `${Date.now()}-postcompact.json`;
+      const filePath = path.join(IPC_INPUT_DIR, filename);
+      const tmpPath = filePath + '.tmp';
+      fs.writeFileSync(tmpPath, JSON.stringify({ type: 'message', text: message }));
+      fs.renameSync(tmpPath, filePath);
+
+      log(`PostCompact: wrote context refresh to ${filename}`);
+    } catch (err) {
+      log(`PostCompact error: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     return {};
@@ -438,6 +505,7 @@ async function runQuery(
   for await (const message of query({
     prompt: stream,
     options: {
+      model: process.env.ANTHROPIC_MODEL || 'claude-opus-4-7',
       cwd: '/workspace/group',
       additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
       resume: sessionId,
@@ -469,6 +537,12 @@ async function runQuery(
         'Skill',
         'NotebookEdit',
         'mcp__nanoclaw__*',
+        'mcp__calendar__*',
+        'mcp__gmail__*',
+        'mcp__drive__*',
+        'mcp__dropbox__*',
+        'mcp__regrid__*',
+        'mcp__memory_kernel__*',
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -484,10 +558,71 @@ async function runQuery(
             NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
           },
         },
+        calendar: {
+          command: 'node',
+          args: [path.join(__dirname, 'calendar-mcp.js')],
+          env: {
+            ...sdkEnv,
+            HOME: '/workspace/group',
+            CALENDAR_IDS: process.env.CALENDAR_IDS || 'primary',
+          },
+        },
+        gmail: {
+          command: 'npx',
+          args: ['-y', '@gongrzhe/server-gmail-autoauth-mcp'],
+          env: {
+            ...sdkEnv,
+            HOME: '/workspace/group',
+          },
+        },
+        drive: {
+          command: 'node',
+          args: [path.join(__dirname, 'drive-mcp.js')],
+          env: {
+            ...sdkEnv,
+            HOME: '/workspace/group',
+          },
+        },
+        dropbox: {
+          command: 'node',
+          args: [path.join(__dirname, 'dropbox-mcp.js')],
+          env: {
+            ...sdkEnv,
+            DROPBOX_CLIENT_ID: process.env.DROPBOX_CLIENT_ID || '',
+            DROPBOX_CLIENT_SECRET: process.env.DROPBOX_CLIENT_SECRET || '',
+            DROPBOX_REFRESH_TOKEN: process.env.DROPBOX_REFRESH_TOKEN || '',
+          },
+        },
+        regrid: {
+          command: 'node',
+          args: [path.join(__dirname, 'regrid-mcp.js')],
+          env: {
+            REGRID_API_TOKEN: process.env.REGRID_API_TOKEN || '',
+          },
+        },
+        memory_kernel: {
+          command: 'node',
+          args: ['/app/node_modules/memory-kernel/dist/mcp/server.js'],
+          env: {
+            MEMORY_DIR: '/workspace/group/memory-kernel',
+            MCP_AGENT_ID: containerInput.assistantName || 'agent',
+            MCP_SESSION_ID: `session-${Date.now()}`,
+          },
+        },
+        mempalace: {
+          command: 'python3',
+          args: ['-m', 'mempalace.mcp_server'],
+          env: {
+            MEMPALACE_PALACE_PATH: '/workspace/group/.mempalace',
+          },
+        },
       },
       hooks: {
         PreCompact: [
           { hooks: [createPreCompactHook(containerInput.assistantName)] },
+        ],
+        PostCompact: [
+          { hooks: [createPostCompactHook()] },
         ],
       },
     },
@@ -628,7 +763,6 @@ async function main(): Promise<void> {
     CLAUDE_CODE_AUTO_COMPACT_WINDOW: '165000',
   };
 
-  const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
 
   let sessionId = containerInput.sessionId;
@@ -682,25 +816,38 @@ async function main(): Promise<void> {
         `Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`,
       );
 
-      const queryResult = await runQuery(
-        prompt,
-        sessionId,
-        mcpServerPath,
-        containerInput,
-        sdkEnv,
-        resumeAt,
-      );
-      if (queryResult.newSessionId) {
-        sessionId = queryResult.newSessionId;
+      const MAX_RETRIES = 5;
+      const BASE_DELAY_MS = 2000;
+      let queryResult: Awaited<ReturnType<typeof runQuery>> | undefined;
+
+      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        try {
+          queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt);
+          break;
+        } catch (retryErr) {
+          const errMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+          const isTransient = /overloaded|529|500|502|503|504|ECONNRESET|ETIMEDOUT|socket hang up/i.test(errMsg);
+
+          if (!isTransient || attempt >= MAX_RETRIES) {
+            throw retryErr;
+          }
+
+          const delayMs = BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 1000;
+          log(`Transient API error (attempt ${attempt + 1}/${MAX_RETRIES}): ${errMsg}. Retrying in ${Math.round(delayMs)}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delayMs));
+        }
       }
-      if (queryResult.lastAssistantUuid) {
-        resumeAt = queryResult.lastAssistantUuid;
+      if (queryResult!.newSessionId) {
+        sessionId = queryResult!.newSessionId;
+      }
+      if (queryResult!.lastAssistantUuid) {
+        resumeAt = queryResult!.lastAssistantUuid;
       }
 
       // If _close was consumed during the query, exit immediately.
       // Don't emit a session-update marker (it would reset the host's
       // idle timer and cause a 30-min delay before the next _close).
-      if (queryResult.closedDuringQuery) {
+      if (queryResult!.closedDuringQuery) {
         log('Close sentinel consumed during query, exiting');
         break;
       }
