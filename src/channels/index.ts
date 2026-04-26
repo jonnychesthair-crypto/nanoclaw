@@ -10,4 +10,4 @@
 // telegram
 import './telegram.js';
 
-// whatsapp
+// whatsapp - REMOVED, not used
