@@ -285,6 +285,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   await channel.setTyping?.(chatJid, true);
   let hadError = false;
   let outputSentToUser = false;
+  let firstReplyClosed = false;
 
   const output = await runAgent(group, prompt, chatJid, async (result) => {
     // Streaming output callback — called for each agent result
@@ -299,6 +300,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       if (text) {
         await channel.sendMessage(chatJid, text);
         outputSentToUser = true;
+        if (!firstReplyClosed) {
+          firstReplyClosed = true;
+          // End session after first reply -- SDK result/success only fires at AsyncIterable end, so IPC-piped follow-ups can stall the turn indefinitely.
+          queue.closeStdin(chatJid);
+        }
       }
       // Only reset idle timer on actual results, not session-update markers (result: null)
       resetIdleTimer();
