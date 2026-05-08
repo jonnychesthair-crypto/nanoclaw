@@ -1,20 +1,22 @@
 # Power Glove migration to nanoclaw 2.0.x
 
 **Drafted:** 2026-04-29
-**Last refreshed:** 2026-05-07
+**Last refreshed:** 2026-05-08
 **Target:** Power Glove fork (`~/nanoclaw`).  Jeeves migrates separately, later.
 
-## Sources & verified state (2026-05-07)
+## Sources & verified state (2026-05-08)
 
-- Upstream version: `2.0.33` (trunk, was 2.0.15 on 2026-04-29 — upstream churned 18 patches in 8 days).  Major release `2.0.0` landed `2026-04-22`.
+- Upstream version: `2.0.44` (trunk, was 2.0.33 on 2026-05-07).  Major release `2.0.0` landed `2026-04-22`.  Upstream is shipping ~1-2 patches per day; expect 2.0.50+ by 2026-05-15.
 - Power Glove version: `1.2.52` (unchanged).
-- Drift vs `upstream/main`: **43 commits ahead, 759 commits behind, 461 files changed** (was 41 / 473 / 431 on 2026-04-29).  Behind-count grew by 286 in 8 days.
-- Working tree: dirty.  Changes since last refresh:
-  - `src/index.ts` band-aid is now **committed** at `0ce6c18` ("wip(group-queue): firstReplyClosed band-aid (Option B TODO)").
-  - New uncommitted edits: `package.json`, `package-lock.json`, `container/agent-runner/package.json`, `container/agent-runner/package-lock.json`.  Origin unknown — investigate before Phase 1.
-  - New untracked file: `VOICE_MODE_PLAN.md`.  Side-project document; decide whether to commit, gitignore, or move out before snapshot.
-- Existing rollback tag: `pre-upgrade-1.2.35` (now 35 days old; do not reuse).
-- Migrate skill installed at `~/nanoclaw/.claude/skills/migrate-nanoclaw/SKILL.md`.  Still **Tier 3 Complex** (759 commits, 461 files, architectural rewrite).
+- Drift vs `upstream/main`: **48 commits ahead, 759 commits behind, 462 files changed** (was 43 / 759 / 461 on 2026-05-07; ahead-count up 5 from today's commits).  Behind-count flat day-over-day because PG also caught up internal work.
+- Working tree: **clean** as of 2026-05-08.  Pre-2026-05-08 uncommitted edits all landed:
+  - Groq transcription cutover at `0497b9d` (`refactor(transcription): swap whisper.cpp for Groq whisper-large-v3-turbo`).
+  - memory-kernel 1.3.0 → 1.16.0 at `ce5d675`.
+  - V2 plan refresh-to-2.0.33 snapshot at `424a43e`.
+  - VOICE_MODE_PLAN.md committed as a planning doc at `2bedf6e`.
+  - Drift-check hardening at `b98b86f`.
+- Existing rollback tag: `pre-upgrade-1.2.35` (now 38 days old; do not reuse — cut a fresh `pre-migrate-2.0.x` tag in Phase 1).
+- Migrate skill installed at `~/nanoclaw/.claude/skills/migrate-nanoclaw/SKILL.md`.  Still **Tier 3 Complex** (759 commits, 462 files, architectural rewrite).
 - Channels remote: only `telegram` (no discord/slack/whatsapp to re-add).
 - Live custom overlay path that disappears in v2: `data/sessions/telegram_main/agent-runner-src/` containing `calendar-mcp.ts, drive-mcp.ts, dropbox-mcp.ts, regrid-mcp.ts, ipc-mcp-stdio.ts, index.ts` (memory-kernel registration).
 
