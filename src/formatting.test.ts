@@ -11,7 +11,7 @@ import {
   formatOutbound,
   stripInternalTags,
 } from './router.js';
-import { parseTextStyles, parseSignalStyles } from './text-styles.js';
+import { parseTextStyles } from './text-styles.js';
 import { NewMessage } from './types.js';
 
 function makeMsg(overrides: Partial<NewMessage> = {}): NewMessage {
@@ -352,18 +352,6 @@ describe('trigger gating (requiresTrigger interaction)', () => {
 
 // --- parseTextStyles ---
 
-describe('parseTextStyles — passthrough channels', () => {
-  it('passes text through unchanged on discord', () => {
-    const md = '**bold** and *italic* and [link](https://example.com)';
-    expect(parseTextStyles(md, 'discord')).toBe(md);
-  });
-
-  it('passes text through unchanged on signal (signal uses parseSignalStyles)', () => {
-    const md = '**bold** and *italic* and [link](https://example.com)';
-    expect(parseTextStyles(md, 'signal')).toBe(md);
-  });
-});
-
 describe('parseTextStyles — bold', () => {
   it('converts **bold** to *bold* on telegram', () => {
     expect(parseTextStyles('say **this** now', 'telegram')).toBe(
@@ -451,111 +439,6 @@ describe('parseTextStyles — code block protection', () => {
   });
 });
 
-// --- parseSignalStyles ---
-
-describe('parseSignalStyles — basic styles', () => {
-  it('extracts BOLD from **text**', () => {
-    const { text, textStyle } = parseSignalStyles('**hello**');
-    expect(text).toBe('hello');
-    expect(textStyle).toEqual([{ style: 'BOLD', start: 0, length: 5 }]);
-  });
-
-  it('extracts ITALIC from *text*', () => {
-    const { text, textStyle } = parseSignalStyles('*hello*');
-    expect(text).toBe('hello');
-    expect(textStyle).toEqual([{ style: 'ITALIC', start: 0, length: 5 }]);
-  });
-
-  it('extracts ITALIC from _text_', () => {
-    const { text, textStyle } = parseSignalStyles('_hello_');
-    expect(text).toBe('hello');
-    expect(textStyle).toEqual([{ style: 'ITALIC', start: 0, length: 5 }]);
-  });
-
-  it('extracts STRIKETHROUGH from ~~text~~', () => {
-    const { text, textStyle } = parseSignalStyles('~~hello~~');
-    expect(text).toBe('hello');
-    expect(textStyle).toEqual([
-      { style: 'STRIKETHROUGH', start: 0, length: 5 },
-    ]);
-  });
-
-  it('extracts MONOSPACE from `inline code`', () => {
-    const { text, textStyle } = parseSignalStyles('`code`');
-    expect(text).toBe('code');
-    expect(textStyle).toEqual([{ style: 'MONOSPACE', start: 0, length: 4 }]);
-  });
-
-  it('extracts BOLD from ## heading and strips marker', () => {
-    const { text, textStyle } = parseSignalStyles('## Hello World');
-    expect(text).toBe('Hello World');
-    expect(textStyle).toEqual([{ style: 'BOLD', start: 0, length: 11 }]);
-  });
-
-  it('no styles for plain text', () => {
-    const { text, textStyle } = parseSignalStyles('just plain text');
-    expect(text).toBe('just plain text');
-    expect(textStyle).toHaveLength(0);
-  });
-});
-
-describe('parseSignalStyles — mixed content', () => {
-  it('correctly offsets styles in mixed text', () => {
-    const { text, textStyle } = parseSignalStyles('say **hi** now');
-    expect(text).toBe('say hi now');
-    expect(textStyle).toEqual([{ style: 'BOLD', start: 4, length: 2 }]);
-  });
-
-  it('handles multiple styles with correct offsets', () => {
-    const { text, textStyle } = parseSignalStyles('**bold** and *italic*');
-    expect(text).toBe('bold and italic');
-    expect(textStyle[0]).toEqual({ style: 'BOLD', start: 0, length: 4 });
-    expect(textStyle[1]).toEqual({ style: 'ITALIC', start: 9, length: 6 });
-  });
-
-  it('strips link markers, no style applied', () => {
-    const { text, textStyle } = parseSignalStyles(
-      '[Click here](https://example.com)',
-    );
-    expect(text).toBe('Click here (https://example.com)');
-    expect(textStyle).toHaveLength(0);
-  });
-
-  it('strips horizontal rules', () => {
-    const { text, textStyle } = parseSignalStyles('above\n---\nbelow');
-    expect(text).toBe('above\nbelow');
-    expect(textStyle).toHaveLength(0);
-  });
-});
-
-describe('parseSignalStyles — code block protection', () => {
-  it('protects fenced code block content with MONOSPACE', () => {
-    const input = '```\n**not bold**\n```';
-    const { text, textStyle } = parseSignalStyles(input);
-    expect(text).toBe('**not bold**');
-    expect(textStyle).toEqual([{ style: 'MONOSPACE', start: 0, length: 12 }]);
-  });
-
-  it('styles outside block are still processed', () => {
-    const input = '**bold**\n```\nraw code\n```';
-    const { text, textStyle } = parseSignalStyles(input);
-    expect(text).toContain('bold');
-    expect(text).toContain('raw code');
-    const boldStyle = textStyle.find((s) => s.style === 'BOLD');
-    const codeStyle = textStyle.find((s) => s.style === 'MONOSPACE');
-    expect(boldStyle).toBeDefined();
-    expect(codeStyle).toBeDefined();
-  });
-});
-
-describe('parseSignalStyles — snake_case guard', () => {
-  it('does not italicise underscores in snake_case', () => {
-    const { text, textStyle } = parseSignalStyles('use snake_case_here');
-    expect(text).toBe('use snake_case_here');
-    expect(textStyle).toHaveLength(0);
-  });
-});
-
 describe('formatOutbound — channel-aware', () => {
   it('applies parseTextStyles when channel is provided', () => {
     expect(formatOutbound('**bold**', 'telegram')).toBe('*bold*');
@@ -569,9 +452,5 @@ describe('formatOutbound — channel-aware', () => {
     expect(
       formatOutbound('<internal>thinking</internal>**done**', 'telegram'),
     ).toBe('*done*');
-  });
-
-  it('signal channel is passthrough — raw markdown preserved for parseSignalStyles', () => {
-    expect(formatOutbound('**bold**', 'signal')).toBe('**bold**');
   });
 });

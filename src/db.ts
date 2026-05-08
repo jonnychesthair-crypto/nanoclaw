@@ -130,10 +130,7 @@ function createSchema(database: Database.Database): void {
   try {
     database.exec(`ALTER TABLE chats ADD COLUMN channel TEXT`);
     database.exec(`ALTER TABLE chats ADD COLUMN is_group INTEGER DEFAULT 0`);
-    // Backfill from JID patterns
-    database.exec(
-      `UPDATE chats SET channel = 'discord', is_group = 1 WHERE jid LIKE 'dc:%'`,
-    );
+    // Backfill from JID patterns (Telegram only)
     database.exec(
       `UPDATE chats SET channel = 'telegram', is_group = 0 WHERE jid LIKE 'tg:%'`,
     );
