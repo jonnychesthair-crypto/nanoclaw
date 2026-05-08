@@ -1,16 +1,20 @@
 # Power Glove migration to nanoclaw 2.0.x
 
 **Drafted:** 2026-04-29
+**Last refreshed:** 2026-05-07
 **Target:** Power Glove fork (`~/nanoclaw`).  Jeeves migrates separately, later.
 
-## Sources & verified state (2026-04-29)
+## Sources & verified state (2026-05-07)
 
-- Upstream version: `2.0.15` (trunk).  Major release `2.0.0` landed `2026-04-22`.
-- Power Glove version: `1.2.52`.
-- Drift vs `upstream/main`: 41 commits ahead, 473 commits behind, 431 files changed.
-- Working tree: dirty.  One uncommitted edit: `src/index.ts` (the `firstReplyClosed` band-aid).
-- Existing rollback tag: `pre-upgrade-1.2.35` (stale, 27 days old; do not reuse).
-- Migrate skill installed at `~/nanoclaw/.claude/skills/migrate-nanoclaw/SKILL.md`.  It tiers migrations; this one is firmly **Tier 3 Complex** (473 commits, 431 files, architectural rewrite).
+- Upstream version: `2.0.33` (trunk, was 2.0.15 on 2026-04-29 — upstream churned 18 patches in 8 days).  Major release `2.0.0` landed `2026-04-22`.
+- Power Glove version: `1.2.52` (unchanged).
+- Drift vs `upstream/main`: **43 commits ahead, 759 commits behind, 461 files changed** (was 41 / 473 / 431 on 2026-04-29).  Behind-count grew by 286 in 8 days.
+- Working tree: dirty.  Changes since last refresh:
+  - `src/index.ts` band-aid is now **committed** at `0ce6c18` ("wip(group-queue): firstReplyClosed band-aid (Option B TODO)").
+  - New uncommitted edits: `package.json`, `package-lock.json`, `container/agent-runner/package.json`, `container/agent-runner/package-lock.json`.  Origin unknown — investigate before Phase 1.
+  - New untracked file: `VOICE_MODE_PLAN.md`.  Side-project document; decide whether to commit, gitignore, or move out before snapshot.
+- Existing rollback tag: `pre-upgrade-1.2.35` (now 35 days old; do not reuse).
+- Migrate skill installed at `~/nanoclaw/.claude/skills/migrate-nanoclaw/SKILL.md`.  Still **Tier 3 Complex** (759 commits, 461 files, architectural rewrite).
 - Channels remote: only `telegram` (no discord/slack/whatsapp to re-add).
 - Live custom overlay path that disappears in v2: `data/sessions/telegram_main/agent-runner-src/` containing `calendar-mcp.ts, drive-mcp.ts, dropbox-mcp.ts, regrid-mcp.ts, ipc-mcp-stdio.ts, index.ts` (memory-kernel registration).
 
@@ -53,11 +57,13 @@ The single most consequential v2 change for Power Glove is the loss of `agent-ru
 
 ## Phase 0: Pre-conditions (do not start migration until all true)
 
-- [ ] Jeeves identity Phase B/C done (`project_jeeves_identity_fix_apr27.md` resolved).
-- [ ] Andrea Gmail flap stable for 48h (`project_andrea_gmail_apr27.md` resolved).
-- [ ] Wed 8pm CDT auto-delete cron has run successfully at least once.
-- [ ] Option B IPC-pipe gate decision made (either ship it or accept the band-aid permanently and remove the TODO).  Either way, no in-flight code work on Power Glove.
-- [ ] 2.0.x has been on upstream `>= 14 days` from `2.0.0` date (so `>= 2026-05-06`).  Buys time for first-mover bugs to surface in the Discord.
+Status as of 2026-05-07:
+
+- [~] Jeeves identity Phase B/C done.  Phase A complete (git config = Andrea).  Phase B in progress this session — both gh accounts already authed; fork+repoint+push happening today.  Phase C drift-check rollout queued.
+- [ ] Andrea Gmail flap stable for 48h.  **Note:** the 02:22 UTC 2026-05-07 reset was a host kernel auto-upgrade reboot (`6.17.0-22` → `6.17.0-23`), not a bot flap.  Treat as external; resume the 48h count from the prior stable window if no bot-internal failures appear.
+- [x] Wed 8pm CDT auto-delete cron ran (2026-04-30 01:00 UTC) but failed verifier check #3 (`error log written after archive time`).  Verifier was overly strict — wedge errors are unrelated to the archive.  Archive being removed manually 2026-05-07.
+- [x] Option B IPC-pipe gate decision made: "no go" (kept band-aid).  Band-aid committed at `0ce6c18` 2026-05-07.  TODO: package.json dirty edits and `VOICE_MODE_PLAN.md` untracked file still need to be reconciled before Phase 1 snapshot.
+- [x] 2.0.x has been on upstream `>= 14 days` from `2.0.0` date (`2026-04-22`).  Cleared 2026-05-06.  Today (2026-05-07) is day 15.
 - [ ] Read the nanoclaw Discord for the past 7 days for v2 migration reports from other forks.
 
 If all true, proceed.  Otherwise, defer.
