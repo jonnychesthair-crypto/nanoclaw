@@ -48,7 +48,7 @@ Import `parseTextStyles` and `ChannelType` from `./text-styles.js`. Modify `form
 
 **File:** `src/text-styles.ts` (new file, committed)
 
-Channel-specific Markdown-to-native formatting (WhatsApp bold/italic, Telegram Markdown, Slack mrkdwn).
+Channel-specific Markdown-to-native formatting (WhatsApp bold/italic, Telegram Markdown).
 
 **File:** `src/index.ts`
 

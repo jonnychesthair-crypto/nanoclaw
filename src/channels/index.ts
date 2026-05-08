@@ -5,8 +5,6 @@
 
 // gmail
 
-// slack
-
 // telegram
 import './telegram.js';
 

@@ -17,7 +17,7 @@
   - Drift-check hardening at `b98b86f`.
 - Existing rollback tag: `pre-upgrade-1.2.35` (now 38 days old; do not reuse — cut a fresh `pre-migrate-2.0.x` tag in Phase 1).
 - Migrate skill installed at `~/nanoclaw/.claude/skills/migrate-nanoclaw/SKILL.md`.  Still **Tier 3 Complex** (759 commits, 462 files, architectural rewrite).
-- Channels remote: only `telegram` (no discord/slack/whatsapp to re-add).
+- Channels remote: only `telegram` (no discord/whatsapp to re-add).
 - Live custom overlay path that disappears in v2: `data/sessions/telegram_main/agent-runner-src/` containing `calendar-mcp.ts, drive-mcp.ts, dropbox-mcp.ts, regrid-mcp.ts, ipc-mcp-stdio.ts, index.ts` (memory-kernel registration).
 
 ---

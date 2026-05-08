@@ -375,10 +375,6 @@ describe('parseTextStyles — bold', () => {
     );
   });
 
-  it('converts **bold** to *bold* on slack', () => {
-    expect(parseTextStyles('**hello**', 'slack')).toBe('*hello*');
-  });
-
   it('does not convert a lone * as bold', () => {
     expect(parseTextStyles('a * b * c', 'whatsapp')).toBe('a * b * c');
   });
@@ -431,12 +427,6 @@ describe('parseTextStyles — links', () => {
   it('preserves [text](url) links on telegram (Markdown v1 renders them natively)', () => {
     expect(parseTextStyles('[Link](https://example.com)', 'telegram')).toBe(
       '[Link](https://example.com)',
-    );
-  });
-
-  it('converts [text](url) to <url|text> on slack', () => {
-    expect(parseTextStyles('[Click here](https://example.com)', 'slack')).toBe(
-      '<https://example.com|Click here>',
     );
   });
 });
