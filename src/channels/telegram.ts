@@ -25,16 +25,10 @@ const FFMPEG_PATH = path.join(
   'bin',
   'ffmpeg',
 );
-const WHISPER_SERVER_URL =
-  process.env.WHISPER_SERVER_URL || 'http://127.0.0.1:8178/inference';
-const WHISPER_HEALTH_URL = (
-  process.env.WHISPER_SERVER_URL || 'http://127.0.0.1:8178/inference'
-).replace(/\/inference$/, '/');
+const GROQ_TRANSCRIPTION_URL =
+  'https://api.groq.com/openai/v1/audio/transcriptions';
+const GROQ_TRANSCRIPTION_MODEL = 'whisper-large-v3-turbo';
 const ZIP_MAGIC = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
-
-// Max audio duration (seconds) to attempt transcription on CPU whisper.
-// base.en model on 4 threads ≈ 4-5x realtime; 120s audio ≈ 8-10 min inference.
-const MAX_TRANSCRIPTION_DURATION_SEC = 120;
 
 /** If the file is a zip, extract the first audio file from it and return the new path. */
 async function unzipIfNeeded(
@@ -56,102 +50,48 @@ async function unzipIfNeeded(
   return path.join(tmpDir, audio);
 }
 
-/**
- * Probe whisper server health via GET "/" which responds instantly
- * (no mutex lock, per server.cpp:426). Returns true if responsive.
- */
-async function isWhisperServerReady(): Promise<boolean> {
-  try {
-    const res = await fetch(WHISPER_HEALTH_URL, {
-      method: 'GET',
-      signal: AbortSignal.timeout(3_000),
-    });
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
+async function transcribeWithGroq(audioPath: string): Promise<string> {
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) throw new Error('GROQ_API_KEY is not set');
 
-/**
- * Serial queue for whisper requests. whisper.cpp server processes inference
- * requests one at a time (single global mutex, server.cpp:388). Sending
- * concurrent requests just piles up connections in httplib's thread pool.
- * Queue locally so only one request is in-flight at a time.
- */
-const whisperQueue: Array<{
-  run: () => Promise<string>;
-  resolve: (v: string) => void;
-  reject: (e: Error) => void;
-}> = [];
-let whisperBusy = false;
-
-async function drainWhisperQueue(): Promise<void> {
-  if (whisperBusy) return;
-  while (whisperQueue.length > 0) {
-    whisperBusy = true;
-    const item = whisperQueue.shift()!;
+  const fileBuffer = await readFile(audioPath);
+  const maxAttempts = 2;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      const result = await item.run();
-      item.resolve(result);
-    } catch (err) {
-      item.reject(err instanceof Error ? err : new Error(String(err)));
-    }
-  }
-  whisperBusy = false;
-}
+      const formData = new FormData();
+      formData.append(
+        'file',
+        new Blob([fileBuffer], { type: 'audio/ogg' }),
+        'audio.ogg',
+      );
+      formData.append('model', GROQ_TRANSCRIPTION_MODEL);
+      formData.append('response_format', 'json');
 
-function enqueueWhisperRequest(run: () => Promise<string>): Promise<string> {
-  return new Promise<string>((resolve, reject) => {
-    whisperQueue.push({ run, resolve, reject });
-    void drainWhisperQueue();
-  });
-}
-
-async function transcribeWithWhisperServer(wavPath: string): Promise<string> {
-  return enqueueWhisperRequest(async () => {
-    // Health probe: GET "/" is instant (no mutex). If blocked, server is mid-inference.
-    const ready = await isWhisperServerReady();
-    if (!ready) {
-      throw new Error('Whisper server busy or unreachable');
-    }
-
-    const fileBuffer = await readFile(wavPath);
-    const maxAttempts = 2;
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      try {
-        const formData = new FormData();
-        formData.append(
-          'file',
-          new Blob([fileBuffer], { type: 'audio/wav' }),
-          'audio.wav',
+      const res = await fetch(GROQ_TRANSCRIPTION_URL, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}` },
+        body: formData,
+        signal: AbortSignal.timeout(60_000),
+      });
+      if (!res.ok)
+        throw new Error(
+          `Groq transcription returned ${res.status}: ${await res.text()}`,
         );
-        formData.append('response_format', 'json');
-
-        const res = await fetch(WHISPER_SERVER_URL, {
-          method: 'POST',
-          body: formData,
-          signal: AbortSignal.timeout(120_000),
-        });
-        if (!res.ok)
-          throw new Error(
-            `Whisper server returned ${res.status}: ${await res.text()}`,
-          );
-        const json = (await res.json()) as any;
-        return (json.text || '').trim() || '[inaudible]';
-      } catch (err) {
-        if (attempt < maxAttempts) {
-          logger.warn(
-            { attempt, maxAttempts },
-            'Whisper transcription attempt failed, retrying',
-          );
-          await new Promise((r) => setTimeout(r, 3_000));
-        } else {
-          throw err;
-        }
+      const json = (await res.json()) as any;
+      return (json.text || '').trim() || '[inaudible]';
+    } catch (err) {
+      if (attempt < maxAttempts) {
+        logger.warn(
+          { attempt, maxAttempts },
+          'Groq transcription attempt failed, retrying',
+        );
+        await new Promise((r) => setTimeout(r, 2_000));
+      } else {
+        throw err;
       }
     }
-    throw new Error('Whisper transcription failed after retries');
-  });
+  }
+  throw new Error('Groq transcription failed after retries');
 }
 
 export interface TelegramChannelOpts {
@@ -612,31 +552,6 @@ export class TelegramChannel implements Channel {
 
       const duration = ctx.message.voice.duration;
 
-      // Skip transcription for audio too long for CPU whisper
-      if (duration > MAX_TRANSCRIPTION_DURATION_SEC) {
-        logger.info(
-          { chatJid, duration },
-          'Voice message too long for CPU transcription, skipping',
-        );
-        this.opts.onChatMetadata(
-          chatJid,
-          timestamp,
-          undefined,
-          'telegram',
-          isGroup,
-        );
-        this.opts.onMessage(chatJid, {
-          id: msgId,
-          chat_jid: chatJid,
-          sender,
-          sender_name: senderName,
-          content: `[Voice message: ${savedPath}] (${Math.round(duration / 60)}min — too long for local transcription)`,
-          timestamp,
-          is_from_me: false,
-        });
-        return;
-      }
-
       // Deliver saved-file message immediately so grammy can continue polling
       this.opts.onChatMetadata(
         chatJid,
@@ -659,11 +574,11 @@ export class TelegramChannel implements Channel {
       void (async () => {
         try {
           const tmpDir = await mkdtemp(path.join(tmpdir(), 'tg-voice-'));
-          const oggPath = path.join(tmpDir, 'voice.ogg');
-          const wavPath = path.join(tmpDir, 'voice.wav');
+          const inputPath = path.join(tmpDir, 'voice-in.ogg');
+          const opusPath = path.join(tmpDir, 'voice.ogg');
 
-          await writeFile(oggPath, buf);
-          const audioPath = await unzipIfNeeded(oggPath, tmpDir);
+          await writeFile(inputPath, buf);
+          const audioPath = await unzipIfNeeded(inputPath, tmpDir);
           await execFileAsync(FFMPEG_PATH, [
             '-i',
             audioPath,
@@ -672,12 +587,14 @@ export class TelegramChannel implements Channel {
             '-ac',
             '1',
             '-c:a',
-            'pcm_s16le',
-            wavPath,
+            'libopus',
+            '-b:a',
+            '16k',
+            opusPath,
             '-y',
           ]);
 
-          const text = await transcribeWithWhisperServer(wavPath);
+          const text = await transcribeWithGroq(opusPath);
           await fs.promises
             .rm(tmpDir, { recursive: true, force: true })
             .catch(() => {});
@@ -760,31 +677,6 @@ export class TelegramChannel implements Channel {
 
       const duration = ctx.message.audio.duration;
 
-      // Skip transcription for audio too long for CPU whisper
-      if (duration > MAX_TRANSCRIPTION_DURATION_SEC) {
-        logger.info(
-          { chatJid, duration },
-          'Audio file too long for CPU transcription, skipping',
-        );
-        this.opts.onChatMetadata(
-          chatJid,
-          timestamp,
-          undefined,
-          'telegram',
-          isGroup,
-        );
-        this.opts.onMessage(chatJid, {
-          id: msgId,
-          chat_jid: chatJid,
-          sender,
-          sender_name: senderName,
-          content: `[Audio: ${savedPath}] (${Math.round(duration / 60)}min — too long for local transcription)`,
-          timestamp,
-          is_from_me: false,
-        });
-        return;
-      }
-
       // Deliver saved-file message immediately so grammy can continue polling
       this.opts.onChatMetadata(
         chatJid,
@@ -811,7 +703,7 @@ export class TelegramChannel implements Channel {
             tmpDir,
             'audio' + (path.extname(filePath) || '.mp3'),
           );
-          const wavPath = path.join(tmpDir, 'audio.wav');
+          const opusPath = path.join(tmpDir, 'audio.ogg');
 
           await writeFile(inputPath, buf);
           const audioPath = await unzipIfNeeded(inputPath, tmpDir);
@@ -823,12 +715,14 @@ export class TelegramChannel implements Channel {
             '-ac',
             '1',
             '-c:a',
-            'pcm_s16le',
-            wavPath,
+            'libopus',
+            '-b:a',
+            '16k',
+            opusPath,
             '-y',
           ]);
 
-          const text = await transcribeWithWhisperServer(wavPath);
+          const text = await transcribeWithGroq(opusPath);
           await fs.promises
             .rm(tmpDir, { recursive: true, force: true })
             .catch(() => {});
