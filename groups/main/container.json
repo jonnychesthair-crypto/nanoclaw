@@ -1,0 +1,61 @@
+{
+  "mcpServers": {
+    "memory_kernel": {
+      "command": "node",
+      "args": ["/app/node_modules/memory-kernel/dist/mcp/server.js"],
+      "env": {
+        "MEMORY_DIR": "/workspace/group/memory-kernel",
+        "MCP_AGENT_ID": "Power Glove"
+      }
+    },
+    "calendar": {
+      "command": "node",
+      "args": ["/workspace/agent/mcp-servers/calendar-mcp.js"],
+      "env": {
+        "HOME": "/workspace/group",
+        "CALENDAR_IDS": "primary"
+      },
+      "instructions": "Calendar context: Jon's primary Google Calendar plus the upcoming-events feed are mounted at /workspace/group/.calendar-mcp/. Always cite event IDs and ISO timestamps when asked for schedule info; never hallucinate."
+    },
+    "gmail": {
+      "command": "npx",
+      "args": ["-y", "@gongrzhe/server-gmail-autoauth-mcp"],
+      "env": {
+        "HOME": "/workspace/group"
+      }
+    },
+    "drive": {
+      "command": "node",
+      "args": ["/workspace/agent/mcp-servers/drive-mcp.js"],
+      "env": {
+        "HOME": "/workspace/group"
+      }
+    },
+    "dropbox": {
+      "command": "node",
+      "args": ["/workspace/agent/mcp-servers/dropbox-mcp.js"],
+      "env": {}
+    },
+    "regrid": {
+      "command": "node",
+      "args": ["/workspace/agent/mcp-servers/regrid-mcp.js"],
+      "env": {}
+    },
+    "mempalace": {
+      "command": "python3",
+      "args": ["-m", "mempalace.mcp_server"],
+      "env": {
+        "MEMPALACE_PALACE_PATH": "/workspace/group/.mempalace"
+      }
+    }
+  },
+  "packages": {
+    "apt": [],
+    "npm": []
+  },
+  "additionalMounts": [],
+  "skills": "all",
+  "provider": "claude",
+  "groupName": "Main",
+  "assistantName": "Power Glove"
+}

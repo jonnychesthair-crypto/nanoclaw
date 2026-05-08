@@ -147,15 +147,25 @@ If anything is thin, tell the migrate skill what to add.  This is the only artif
 
 ## Phase 4: Architecture decision before Upgrade phase
 
-Before running migrate's Upgrade phase, decide how the 5 MCP servers will live in v2.  Options:
+**LOCKED 2026-05-08.**  Going with Option A (per-group config).  v2 reads `groups/<folder>/container.json` (verified at `src/container-config.ts:60-64` on upstream main) — same intent as the original ".mcp.json" plan, correct filename is `container.json`.  The pre-staged files are committed:
 
-**Option A -- composed `CLAUDE.md` + `.mcp.json` per group.**  The MCP servers stay as standalone Node processes spawned by the read-only agent-runner via a per-group MCP config.  Lowest blast radius, no agent-runner fork.  Probably the right call.  Requires confirming v2's agent-runner reads a per-group MCP config (verify against upstream `docs/architecture.md` and `docs/isolation-model.md`).
+- `groups/main/container.json` — Power Glove: 7 servers (memory_kernel, calendar, gmail, drive, dropbox, regrid, mempalace), assistantName "Power Glove".
+- `groups/telegram_main/container.json` — Jeeves: 4 servers (memory_kernel, calendar, gmail, drive), assistantName "jeeevo-bot".
 
-**Option B -- fork the agent-runner.**  Keep the registrations baked in.  Means maintaining a Power-Glove-specific agent-runner image instead of using upstream's shared one.  Permanent drift cost.  Avoid unless A is impossible.
+These files sit dormant under v1 and are read by v2 once migration completes.
 
-**Option C -- upstream PRs.**  Submit the 5 MCP registrations to qwibitai/nanoclaw.  Slowest but cleanest long-term.  Realistic only for memory_kernel since the others (calendar/drive/dropbox/regrid) are Jon-specific integrations.
+### Phase 4 sub-decisions still open at migration-time
 
-Pick before Phase 5.  If Option A is viable, the migration guide should describe MCP setup as "drop these 5 files into `groups/<g>/mcp/`, register in `groups/<g>/.mcp.json`" rather than "edit agent-runner-src/index.ts."
+1. **MCP server binary placement.**  Today the binaries (`calendar-mcp.js`, `drive-mcp.js`, `dropbox-mcp.js`, `regrid-mcp.js`, `ipc-mcp-stdio.ts`) live in `data/sessions/telegram_main/agent-runner-src/`, which v2 deletes.  The pre-staged container.json points at `/workspace/agent/mcp-servers/<name>.js` — i.e. a directory mounted from a stable host-side location.  During migrate's Upgrade phase, copy the binaries to `~/nanoclaw/mcp-servers/` (and `~/nanoclaw-jeeves/mcp-servers/` for Jeeves's 3) and add an `additionalMounts` entry in container.json mapping `${REPO_ROOT}/mcp-servers` → `/workspace/agent/mcp-servers` (read-only).
+
+2. **Power Glove credential dirs.**  PG today reads `~/.calendar-mcp/`, `~/.gmail-mcp/`, `~/.drive-mcp/` (host-home).  Container.json sets `HOME=/workspace/group`, expecting the credentials inside the group folder.  Two options at migration:
+   - (a) Move host-home dirs into `~/nanoclaw/groups/main/.calendar-mcp/` etc., matching Jeeves's pattern.  Cleanest.
+   - (b) Add `additionalMounts` from `${HOME}/.calendar-mcp` → `/workspace/group/.calendar-mcp` for each, leaving host paths in place.  Less risk.
+   Recommend (a); the move is one-shot.
+
+3. **Secrets in env.**  v2 routes credentials through OneCLI vault (`src/container-runner.ts:455-461` enforces `OneCLI gateway not applied — refusing to spawn container without credentials`).  Pre-staged container.json carries empty env objects for `dropbox` and `regrid` for that reason.  Run `/init-onecli` during Phase 5 to migrate `DROPBOX_*` and `REGRID_API_TOKEN` from `.env` to the vault before first agent spawn.
+
+4. **`ipc-mcp-stdio.ts` (the host-IPC bridge).**  This isn't in the staged container.json — v2 already provides the `nanoclaw` built-in MCP server (`docs/SPEC.md:614-630`) covering `schedule_task`, `send_message`, etc.  Confirm during migration that v2's built-in covers every IPC tool the v1 bridge exposed; if not, port the missing ones into a v2 skill rather than re-introducing the stdio bridge.
 
 ---
 
