@@ -7,5 +7,3 @@
 
 // telegram
 import './telegram.js';
-
-// whatsapp - REMOVED, not used

@@ -2,19 +2,15 @@
  * parseTextStyles — convert Claude's Markdown output to channel-native formatting.
  *
  * Claude outputs standard Markdown. Each channel has its own text style syntax:
- *   - Signal:             passthrough (SignalChannel handles rich text styles natively
- *                         via the signal-cli JSON-RPC textStyle param — see parseSignalStyles)
- *   - WhatsApp / Telegram: *bold*, _italic_, no headings, plain links
- *   - Discord:            passthrough (already Markdown)
+ *   - Signal:    passthrough (SignalChannel handles rich text styles natively
+ *                via the signal-cli JSON-RPC textStyle param — see parseSignalStyles)
+ *   - Telegram:  *bold*, _italic_, no headings, native [text](url) links preserved
+ *   - Discord:   passthrough (already Markdown)
  *
  * Code blocks (fenced and inline) are NEVER transformed by marker substitution.
  */
 
-export type ChannelType =
-  | 'signal'
-  | 'whatsapp'
-  | 'telegram'
-  | 'discord';
+export type ChannelType = 'signal' | 'telegram' | 'discord';
 
 /** Transform Markdown text for the target channel's native format. */
 export function parseTextStyles(text: string, channel: ChannelType): string {
@@ -270,7 +266,7 @@ function findClosingUnderscore(s: string, from: number): number {
 }
 
 // ---------------------------------------------------------------------------
-// Marker-substitution helpers (WhatsApp / Telegram)
+// Marker-substitution helpers (Telegram)
 // ---------------------------------------------------------------------------
 
 interface Segment {
@@ -317,20 +313,16 @@ function transformSegment(text: string, channel: ChannelType): string {
   // first (**bold** → *bold*), the italic step would immediately re-convert *bold*
   // to _bold_, producing wrong output.
 
-  // 1. Italic: *text* → _text_ (whatsapp/telegram use _)
+  // 1. Italic: *text* → _text_ (Telegram uses _)
   t = t.replace(/(?<!\*)\*(?=[^\s*])([^*\n]+?)(?<=[^\s*])\*(?!\*)/g, '_$1_');
 
-  // 2. Bold: **text** → *text* (whatsapp/telegram use single *)
+  // 2. Bold: **text** → *text* (Telegram uses single *)
   t = t.replace(/\*\*(?=[^\s*])([^*]+?)(?<=[^\s*])\*\*/g, '*$1*');
 
   // 3. Headings: ## Title → *Title* (any level, line-start only)
   t = t.replace(/^#{1,6}\s+(.+)$/gm, '*$1*');
 
-  // 4. Links
-  if (channel === 'whatsapp') {
-    t = t.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1 ($2)');
-  }
-  // Telegram: preserve [text](url) — Markdown v1 renders them natively
+  // 4. Links: Telegram MarkdownV1 renders [text](url) natively — preserve.
 
   // 5. Horizontal rules: strip them
   t = t.replace(/^(-{3,}|\*{3,}|_{3,})$/gm, '');
