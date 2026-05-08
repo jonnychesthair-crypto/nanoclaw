@@ -21,11 +21,13 @@ DRIFT_THRESHOLD=10
 DRY_RUN=0
 [ "${1:-}" = "--dry-run" ] && DRY_RUN=1
 
-# 1. Auth check
-if ! gh auth status >/dev/null 2>&1; then
-  echo "SKIP: gh not authenticated"
+# 1. Auth check — capture stderr so cron logs the actual reason instead of failing silent
+ts() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
+auth_err=$(gh auth status 2>&1) || {
+  echo "$(ts) SKIP: gh auth status failed (config=${GH_CONFIG_DIR:-default})"
+  echo "$auth_err" | sed 's/^/  /'
   exit 1
-fi
+}
 
 # 2. Fork HEAD on main
 fork_head_json=$(gh api "repos/$FORK/commits?sha=main&per_page=1" --jq '.[0]')
