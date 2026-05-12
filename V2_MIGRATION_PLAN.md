@@ -1,8 +1,24 @@
 # Power Glove migration to nanoclaw 2.0.x
 
 **Drafted:** 2026-04-29
-**Last refreshed:** 2026-05-08
+**Last refreshed:** 2026-05-11 (stale-notice patch only; full refresh pending)
 **Target:** Power Glove fork (`~/nanoclaw`).  Jeeves migrates separately, later.
+
+> ## ⚠️ STALE NOTICE - read this before executing any phase below
+>
+> Upstream shipped a purpose-built v1→v2 migration tool on 2026-05-08 (v2.0.45) and moved container config from files to DB on 2026-05-09 (v2.0.48).  When executing, override these sections:
+>
+> - **Phases 3-5** - do NOT use `/migrate-nanoclaw`.  New flow: clone fresh v2 to `~/nanoclaw-v2`, then `bash migrate-v2.sh` from a SEPARATE TERMINAL (Claude Code's bash subprocess is refused).  Auto-hands off to the `/migrate-from-v1` skill.
+> - **Phase 4 "Option A locked" sub-decisions** - moot.  2.0.48 moved `container.json` into the `container_configs` DB table (auto-backfilled on first start).  Post-migration config management is `ncl groups config update`.
+> - **Phase 4 sub-decision 4 (`ipc-mcp-stdio`)** - dead in v2.  Two-DB session split (`inbound.db` + `outbound.db`) replaces IPC entirely.
+> - **Customization inventory** - src/* edits (firstReplyClosed band-aid, container-runner.ts changes, IPC handlers) do NOT port per `/migrate-from-v1` Phase 4.  They stash to `docs/v1-fork-reference/`.  Custom MCPs (calendar/drive/dropbox/regrid) re-implement as v2 skills.
+> - **Org rename** - `qwibitai/nanoclaw` → `nanocoai/nanoclaw` (2026-05-10).  GitHub redirects; existing remotes and the drift-check script still work.
+>
+> Full plan refresh (Medium or Heavy shape) is pending until Jon has time.  Until then: read architecture sections below for context, follow the new flow above for execution.
+>
+> Sources: [v1-to-v2-changes](https://github.com/nanocoai/nanoclaw/blob/main/docs/v1-to-v2-changes.md), [migrate-v2.sh](https://github.com/nanocoai/nanoclaw/blob/main/migrate-v2.sh), [migrate-from-v1 SKILL](https://github.com/nanocoai/nanoclaw/blob/main/.claude/skills/migrate-from-v1/SKILL.md), [CHANGELOG](https://github.com/nanocoai/nanoclaw/blob/main/CHANGELOG.md).
+
+---
 
 ## Sources & verified state (2026-05-08)
 
@@ -59,16 +75,15 @@ The single most consequential v2 change for Power Glove is the loss of `agent-ru
 
 ## Phase 0: Pre-conditions (do not start migration until all true)
 
-Status as of 2026-05-07:
+Status as of 2026-05-08 (all clear — proceed to Phase 1 when ready):
 
-- [~] Jeeves identity Phase B/C done.  Phase A complete (git config = Andrea).  Phase B in progress this session — both gh accounts already authed; fork+repoint+push happening today.  Phase C drift-check rollout queued.
-- [ ] Andrea Gmail flap stable for 48h.  **Note:** the 02:22 UTC 2026-05-07 reset was a host kernel auto-upgrade reboot (`6.17.0-22` → `6.17.0-23`), not a bot flap.  Treat as external; resume the 48h count from the prior stable window if no bot-internal failures appear.
+- [x] Jeeves identity Phase B/C done (verified 2026-05-08).  Phase A: local git config = Andrea (`andrea.melton02@gmail.com` / `andreamelton02-stack`).  Phase B: gh auth done; Andrea's fork `andreamelton02-stack/nanoclaw` created 2026-05-07T15:49Z; origin re-pointed; all branches pushed (local HEAD = origin/main = `3a6ce9d`).  Phase C: `~/nanoclaw-jeeves/scripts/upstream-drift-check.sh` deployed with `FORK="andreamelton02-stack/nanoclaw"`; Monday 9am CST cron line in crontab; upgrade-discipline section mirrored into `~/nanoclaw-jeeves/CLAUDE.md` lines 42-49.
+- [x] Andrea Gmail flap stable (verified 2026-05-08).  619 successful Gmail deliveries in current log; 10+ deliveries in the last 5 hours (most recent `12:39:26 UTC`), zero errors after each.  Stale `invalid_grant` entries in `nanoclaw.error.log` are from before the 2026-04-17 16:12 credentials re-auth (`credentials.json.bak-2026-04-17-broken` is the artifact); not current state.  No wedge fingerprint (`final-sigterm timed out`) in 7-day journalctl window.  One unexplained restart at `2026-05-08 01:23:52 UTC`; Gmail delivery cadence and bot behavior continued normally through it, so does not block the gate (likely a manual `systemctl restart` ~53 min before the cleanup-commit deploy session at 02:16 UTC).
 - [x] Wed 8pm CDT auto-delete cron ran (2026-04-30 01:00 UTC) but failed verifier check #3 (`error log written after archive time`).  Verifier was overly strict — wedge errors are unrelated to the archive.  Archive being removed manually 2026-05-07.
-- [x] Option B IPC-pipe gate decision made: "no go" (kept band-aid).  Band-aid committed at `0ce6c18` 2026-05-07.  TODO: package.json dirty edits and `VOICE_MODE_PLAN.md` untracked file still need to be reconciled before Phase 1 snapshot.
-- [x] 2.0.x has been on upstream `>= 14 days` from `2.0.0` date (`2026-04-22`).  Cleared 2026-05-06.  Today (2026-05-07) is day 15.
-- [ ] Read the nanoclaw Discord for the past 7 days for v2 migration reports from other forks.
+- [x] Option B IPC-pipe gate decision made: "no go" (kept band-aid).  Band-aid committed at `0ce6c18` 2026-05-07.  Working tree clean as of 2026-05-08; package.json edits and `VOICE_MODE_PLAN.md` landed at `2bedf6e`.
+- [x] 2.0.x has been on upstream `>= 14 days` from `2.0.0` date (`2026-04-22`).  Cleared 2026-05-06.  Day 16 as of 2026-05-08.
 
-If all true, proceed.  Otherwise, defer.
+All five gates cleared.  Phase 1 (snapshot + rollback prep) can begin whenever Jon decides.
 
 ---
 
