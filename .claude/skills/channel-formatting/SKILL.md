@@ -1,23 +1,18 @@
 ---
 name: channel-formatting
-description: Convert Claude's Markdown output to each channel's native text syntax before delivery. Adds zero-dependency formatting for WhatsApp, Telegram, and Slack (marker substitution). Also ships a Signal rich-text helper (parseSignalStyles) used by the Signal skill.
+description: Convert Claude's Markdown output to Telegram's native text syntax before delivery. Zero-dependency marker substitution (e.g., `**bold**` -> `*bold*`).
 ---
 
 # Channel Formatting
 
-This skill wires channel-aware Markdown conversion into the outbound pipeline so Claude's
-responses render natively on each platform — no more literal `**asterisks**` in WhatsApp or
-Telegram.
+This skill wires Telegram-aware Markdown conversion into the outbound pipeline so Claude's
+responses render natively on Telegram - no more literal `**asterisks**`.
 
 | Channel | Transformation |
 |---------|---------------|
-| WhatsApp | `**bold**` → `*bold*`, `*italic*` → `_italic_`, headings → bold, links → `text (url)` |
-| Telegram | same as WhatsApp, but `[text](url)` links are preserved (Markdown v1 renders them natively) |
-| Slack | same as WhatsApp, but links become `<url\|text>` |
-| Discord | passthrough (Discord already renders Markdown) |
-| Signal | passthrough for `parseTextStyles`; `parseSignalStyles` in `src/text-styles.ts` produces plain text + native `textStyle` ranges for use by the Signal skill |
+| Telegram | `**bold**` -> `*bold*`, `*italic*` -> `_italic_`, headings -> bold, `[text](url)` links preserved (Markdown v1 renders them natively) |
 
-Code blocks (fenced and inline) are always protected — their content is never transformed.
+Code blocks (fenced and inline) are always protected - their content is never transformed.
 
 ## Phase 1: Pre-flight
 
@@ -106,19 +101,6 @@ asterisks.
 ```bash
 tail -f logs/nanoclaw.log
 ```
-
-## Signal Skill Integration
-
-If you have the Signal skill installed, `src/channels/signal.ts` can import
-`parseSignalStyles` from the newly present `src/text-styles.ts`:
-
-```typescript
-import { parseSignalStyles, SignalTextStyle } from '../text-styles.js';
-```
-
-`parseSignalStyles` returns `{ text: string, textStyle: SignalTextStyle[] }` where
-`textStyle` is an array of `{ style, start, length }` objects suitable for the
-`signal-cli` JSON-RPC `textStyles` parameter (format: `"start:length:STYLE"`).
 
 ## Removal
 
