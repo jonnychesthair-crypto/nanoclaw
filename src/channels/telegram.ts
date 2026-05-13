@@ -887,37 +887,16 @@ export class TelegramChannel implements Channel {
 
     try {
       const numericId = jid.replace(/^tg:/, '');
+      const MAX_LENGTH = 4096;
 
-      // Split text into segments: prose and code blocks.
-      // Code blocks (```...```) are sent as downloadable/copyable file attachments.
-      const segments = splitCodeBlocks(text);
-
-      for (const seg of segments) {
-        if (seg.type === 'text') {
-          const MAX_LENGTH = 4096;
-          if (seg.content.length <= MAX_LENGTH) {
-            await sendTelegramMessage(this.bot.api, numericId, seg.content);
-          } else {
-            for (let i = 0; i < seg.content.length; i += MAX_LENGTH) {
-              await sendTelegramMessage(
-                this.bot.api,
-                numericId,
-                seg.content.slice(i, i + MAX_LENGTH),
-              );
-            }
-          }
-        } else {
-          // Send code as a file attachment for easy copy/download
-          const ext = seg.lang ? langToExt(seg.lang) : 'txt';
-          const fileName = `code.${ext}`;
-          const fileData = Buffer.from(seg.content, 'utf-8');
-          await this.bot.api.sendDocument(
+      if (text.length <= MAX_LENGTH) {
+        await sendTelegramMessage(this.bot.api, numericId, text);
+      } else {
+        for (let i = 0; i < text.length; i += MAX_LENGTH) {
+          await sendTelegramMessage(
+            this.bot.api,
             numericId,
-            new InputFile(fileData, fileName),
-            {
-              caption: seg.lang ? `\`${seg.lang}\`` : undefined,
-              parse_mode: 'Markdown',
-            },
+            text.slice(i, i + MAX_LENGTH),
           );
         }
       }
