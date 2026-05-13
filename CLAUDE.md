@@ -1,6 +1,32 @@
-# NanoClaw
+# NanoClaw (Power Glove)
 
 Personal Claude assistant. See [README.md](README.md) for philosophy and setup. See [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) for architecture decisions.
+
+## OAuth Lock (Power Glove = Jon)  read before any Google-auth claim
+
+Power Glove is **connected to Google via OAuth**.  The GCP project is **bubbly-mantis-488216-k1** (number `523151035551`, display name `OpenClaw`), owner `jonsmelton@gmail.com`, **PUBLISHED to production 2026-04-16**.  Refresh tokens are **indefinite**.  Do NOT raise the "7-day testing-mode expiry" hypothesis ever again.
+
+Identifier: every Power Glove `gcp-oauth.keys.json` has `client_id` starting with **`523...`**.  That is the only authoritative ownership signal.  The `project_id` STRING in the keys file is decoration; ignore it.
+
+Credential paths (host) - all three live at `~/`:
+- Gmail: `~/.gmail-mcp/` (referenced by `GMAIL_CREDENTIALS_DIR=/home/melto007/.gmail-mcp` in `.env`; forwarded into container by `src/container-runner.ts` lines ~192-198)
+- Calendar: `~/.calendar-mcp/` (legacy host-home path; **not actually read by the bot**)
+- Drive: `~/.drive-mcp/`
+
+Credential paths (the ones the container actually reads via `HOME=/workspace/group` resolution in the calendar MCP subprocess):
+- Calendar: `~/nanoclaw/groups/telegram_main/.calendar-mcp/credentials.json` <- THIS is the one that matters for calendar.
+- Gmail: container reads via the `GMAIL_CREDENTIALS_DIR` env injection, not via `HOME` resolution.
+
+### Hard rules
+
+1.  Never run `~/.calendar-mcp/reauth*.js` or `scripts/auth-calendar.js`.  They are quarantined (renamed to `.DEAD-PATH-DO-NOT-RUN.txt`) because they write to a path the container does not read.  The PreToolUse hook at `~/.claude/hooks/oauth-guard.sh` also blocks them.
+2.  Never `cp` between `~/.{gmail,calendar,drive}-mcp/` and `~/.{gmail,calendar,drive}-mcp-andrea/`.  Jeeves is a separate bot in a separate container with a separate Google account.  Cross-bot ops blocked by the hook.
+3.  The only verified-working Calendar reauth helper is `scripts/auth-powerglove-calendar.cjs` (port 3778, login_hint=jonsmelton@gmail.com, identity check).  Do not run it unless `invalid_grant` is verified by curl against `https://oauth2.googleapis.com/token` with the actual refresh_token.
+4.  Never edit `credentials.json` or `gcp-oauth.keys.json` directly.  The hook will surface a confirmation prompt if you try.
+
+### When Google integration looks broken
+
+Read in this order: this section, then `~/.claude/projects/-home-melto007/memory/project_gmail_publish_app.md` (diagnostic curl), then `project_calendar_oauth_setup_pattern.md`.  Only then form a hypothesis.  The 2026-05-11 incident cost 2+ hours by skipping that step.
 
 ## Quick Context
 
@@ -23,7 +49,7 @@ Single Node.js process with skill-based channel system. Channels (WhatsApp, Tele
 
 ## Secrets / Credentials / Proxy (OneCLI)
 
-API keys, secret keys, OAuth tokens, and auth credentials are managed by the OneCLI gateway — which handles secret injection into containers at request time, so no keys or tokens are ever passed to containers directly. Run `onecli --help`.
+Upstream nanoclaw uses an OneCLI gateway for secret injection.  **Power Glove diverges from this** (see next subsection) and **Google OAuth credentials are NOT routed through OneCLI** at all -- they live as files on disk per the "OAuth Lock" section above.  When in doubt about a Google integration, the answer is in OAuth Lock, not OneCLI.
 
 ### Power Glove env injection (fork divergence from upstream)
 
