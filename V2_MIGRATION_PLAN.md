@@ -91,7 +91,7 @@ Compiled from upstream GitHub issues (state as of 2026-05-16) and Discord transc
 ### Pre-migration decisions (BEFORE Phase 1)
 
 1. **`/remote-control` is REMOVED in v2.**  Verified by direct file scan: no `remote-control` skill file in `upstream/main`; only v1 CHANGELOG entries (1.2.14, 1.2.15) mention it.  PG's customization inventory item 6 ("host utility scripts") covers this.  Decide before Phase 1: re-implement as a host-side utility outside the container model, or live without.  *Source: upstream file scan; Discord 5/12 (tas) asked, no resolution captured.*
-2. **Auth-mode check.**  v2 setup requires `org:create_api_key` scope on Claude Code OAuth tokens.  If the host uses `claude setup-token` OAuth instead of `ANTHROPIC_API_KEY`, that scope may be missing.  Fall back to `ANTHROPIC_API_KEY` for v2.  *Source: Discord 4/20, Zettadata.*
+2. **Auth-mode resolution: USE NATIVE CREDENTIAL PROXY for OAuth.**  v2's default OneCLI vault path requires `org:create_api_key` scope on Claude Code OAuth tokens; tokens from `claude setup-token` often lack it (Discord 4/20, Zettadata).  **For PG, the right path is the native credential proxy via `/use-native-credential-proxy` skill** (see Phase 5).  Reads `CLAUDE_CODE_OAUTH_TOKEN` directly from `.env`, no scope requirement, and matches PG's existing env-injection architecture (per memory `feedback_nanoclaw_env_injection`).  *Sources: Discord 4/20 Zettadata; upstream `.claude/skills/use-native-credential-proxy/SKILL.md` (Claude subscription branch).*
 
 ### During migration (Phase 3-4)
 
@@ -267,29 +267,44 @@ Non-portable items (stash only, do not translate):
 
 ---
 
-## Phase 5: Migrate credentials to OneCLI vault
+## Phase 5: Switch to native credential proxy (PG's right path; not OneCLI vault)
+
+**PG uses OAuth via `CLAUDE_CODE_OAUTH_TOKEN` from the Claude subscription**, not an API key, AND PG already injects third-party API credentials (`DROPBOX_*`, `CALENDAR_IDS`, `REGRID_API_TOKEN`, `EBAY_*`) via docker `-e` flags from `src/container-runner.ts` per memory `feedback_nanoclaw_env_injection`.  Both facts point to v2's **native credential proxy** path, not OneCLI vault.
+
+The native proxy is the same conceptual model PG already uses (read from `.env`, inject into container), and it bypasses OneCLI's `org:create_api_key` scope requirement that bit Zettadata on Discord 4/20.
 
 ```
-/init-onecli
+/use-native-credential-proxy
 ```
 
-This skill installs OneCLI Agent Vault (if missing) and migrates `.env` keys into the vault.  Verify:
+The skill merges `upstream/skill/native-credential-proxy` into `~/nanoclaw-v2`, which:
+
+- Adds `src/credential-proxy.ts` + tests.
+- Restores credential-proxy wiring in `src/index.ts`, `src/container-runner.ts`, `src/container-runtime.ts`, `src/config.ts`.
+- Removes `@onecli-sh/sdk` from `package.json`.
+- Sets `CREDENTIAL_PROXY_PORT` (default 3001).
+- Reverts setup-skill instructions to `.env`-based credential management.
+
+In the skill's Phase 3 (Setup Credentials), pick **"Claude subscription (Pro/Max)"** when asked.  The skill instructs `claude setup-token` in another terminal; paste the resulting `CLAUDE_CODE_OAUTH_TOKEN` into `~/nanoclaw-v2/.env`.  (`ANTHROPIC_AUTH_TOKEN` also supported as fallback.)
+
+Verify post-skill:
 
 ```bash
-# Health
-curl -s http://127.0.0.1:10254/health | jq .
-
-# PG-specific keys present
-onecli secrets list | grep -E '(DROPBOX|CALENDAR_IDS|REGRID|EBAY)'
+grep credential-proxy src/index.ts             # should show the import
+grep '@onecli-sh/sdk' package.json             # should return nothing
+pnpm run build                                 # must succeed
+pnpm exec vitest run src/credential-proxy.test.ts src/container-runner.test.ts   # must pass
 ```
 
-Then set the auto-created agents' secret mode (they default to `selective`, which means no secrets attached even if matching secrets exist):
+PG's third-party keys (`DROPBOX_*`, `CALENDAR_IDS`, `REGRID_API_TOKEN`, `EBAY_*`) stay in `.env` and the credential proxy injects them into outbound container requests.  No vault, no scope migration, no key rotation.
 
-```bash
-onecli agents set-secret-mode --mode all
-```
+**Interaction with migrate-v2.sh Phase 3b (OneCLI install):**  The script tries to install OneCLI as part of its bootstrap.  Recommended order:
 
-After this, the PG-specific `src/container-runner.ts` env-injection patches are dead.  Confirm by running PG's MCP tools end-to-end in Phase 7.
+1. Let `migrate-v2.sh` install OneCLI (Phase 3b runs as-is).
+2. Immediately after the script finishes and `/migrate-from-v1` completes its Phase 0 (service switchover), run `/use-native-credential-proxy` before any agent spawn that would depend on OneCLI.
+3. OneCLI ends up installed-but-unused.  Can leave it running (harmless) or uninstall later.
+
+After this, PG's `src/container-runner.ts` env-injection patches are dead in v2 (the native proxy does the same job, upstream-supported).
 
 ## Phase 6: Re-evaluate customizations against v2
 
