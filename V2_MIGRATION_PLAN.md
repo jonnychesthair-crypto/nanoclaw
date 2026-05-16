@@ -1,303 +1,400 @@
 # Power Glove migration to nanoclaw 2.0.x
 
-**Drafted:** 2026-04-29
-**Last refreshed:** 2026-05-11 (stale-notice patch only; full refresh pending)
-**Target:** Power Glove fork (`~/nanoclaw`).  Jeeves migrates separately, later.
+**Drafted:** 2026-04-29 (original, targeting old `/migrate-nanoclaw` flow)
+**Refreshed:** 2026-05-16 (full rewrite for the `migrate-v2.sh` + `/migrate-from-v1` flow shipped in upstream 2.0.45 / 2.0.48 / 2.0.63)
+**Target:** Power Glove fork at `~/nanoclaw`.  Jeeves migrates separately, later.
 
-> ## ⚠️ STALE NOTICE - read this before executing any phase below
->
-> Upstream shipped a purpose-built v1→v2 migration tool on 2026-05-08 (v2.0.45) and moved container config from files to DB on 2026-05-09 (v2.0.48).  When executing, override these sections:
->
-> - **Phases 3-5** - do NOT use `/migrate-nanoclaw`.  New flow: clone fresh v2 to `~/nanoclaw-v2`, then `bash migrate-v2.sh` from a SEPARATE TERMINAL (Claude Code's bash subprocess is refused).  Auto-hands off to the `/migrate-from-v1` skill.
-> - **Phase 4 "Option A locked" sub-decisions** - moot.  2.0.48 moved `container.json` into the `container_configs` DB table (auto-backfilled on first start).  Post-migration config management is `ncl groups config update`.
-> - **Phase 4 sub-decision 4 (`ipc-mcp-stdio`)** - dead in v2.  Two-DB session split (`inbound.db` + `outbound.db`) replaces IPC entirely.
-> - **Customization inventory** - src/* edits (firstReplyClosed band-aid, container-runner.ts changes, IPC handlers) do NOT port per `/migrate-from-v1` Phase 4.  They stash to `docs/v1-fork-reference/`.  Custom MCPs (calendar/drive/dropbox/regrid) re-implement as v2 skills.
-> - **Org rename** - `qwibitai/nanoclaw` → `nanocoai/nanoclaw` (2026-05-10).  GitHub redirects; existing remotes and the drift-check script still work.
->
-> Full plan refresh (Medium or Heavy shape) is pending until Jon has time.  Until then: read architecture sections below for context, follow the new flow above for execution.
->
-> Sources: [v1-to-v2-changes](https://github.com/nanocoai/nanoclaw/blob/main/docs/v1-to-v2-changes.md), [migrate-v2.sh](https://github.com/nanocoai/nanoclaw/blob/main/migrate-v2.sh), [migrate-from-v1 SKILL](https://github.com/nanocoai/nanoclaw/blob/main/.claude/skills/migrate-from-v1/SKILL.md), [CHANGELOG](https://github.com/nanocoai/nanoclaw/blob/main/CHANGELOG.md).
+> This plan replaces an earlier draft that targeted the old `/migrate-nanoclaw` Extract/Upgrade flow.  Upstream replaced that flow with a two-step migration in 2026-05-08 onward (`migrate-v2.sh` script + `/migrate-from-v1` Claude skill).  This rewrite reflects current upstream as of 2.0.63 (2026-05-15).
 
 ---
 
-## Sources & verified state (2026-05-08)
+## Sources of truth (read before executing)
 
-- Upstream version: `2.0.44` (trunk, was 2.0.33 on 2026-05-07).  Major release `2.0.0` landed `2026-04-22`.  Upstream is shipping ~1-2 patches per day; expect 2.0.50+ by 2026-05-15.
-- Power Glove version: `1.2.52` (unchanged).
-- Drift vs `upstream/main`: **48 commits ahead, 759 commits behind, 462 files changed** (was 43 / 759 / 461 on 2026-05-07; ahead-count up 5 from today's commits).  Behind-count flat day-over-day because PG also caught up internal work.
-- Working tree: **clean** as of 2026-05-08.  Pre-2026-05-08 uncommitted edits all landed:
-  - Groq transcription cutover at `0497b9d` (`refactor(transcription): swap whisper.cpp for Groq whisper-large-v3-turbo`).
-  - memory-kernel 1.3.0 → 1.16.0 at `ce5d675`.
-  - V2 plan refresh-to-2.0.33 snapshot at `424a43e`.
-  - VOICE_MODE_PLAN.md committed as a planning doc at `2bedf6e`.
-  - Drift-check hardening at `b98b86f`.
-- Existing rollback tag: `pre-upgrade-1.2.35` (now 38 days old; do not reuse — cut a fresh `pre-migrate-2.0.x` tag in Phase 1).
-- Migrate skill installed at `~/nanoclaw/.claude/skills/migrate-nanoclaw/SKILL.md`.  Still **Tier 3 Complex** (759 commits, 462 files, architectural rewrite).
-- Channels remote: only `telegram` (no discord/whatsapp to re-add).
-- Live custom overlay path that disappears in v2: `data/sessions/telegram_main/agent-runner-src/` containing `calendar-mcp.ts, drive-mcp.ts, dropbox-mcp.ts, regrid-mcp.ts, ipc-mcp-stdio.ts, index.ts` (memory-kernel registration).
+All four live in upstream nanoclaw and can be read locally via `git show upstream/main:<path>`:
 
----
+- `docs/v1-to-v2-changes.md` — vocabulary doc for what changed between 1.x and 2.x.  Authoritative for entity model, scheduling, credentials, channel model, group folders.
+- `migrate-v2.sh` — the entry-point script.  Refuses to run in Claude Code's bash subprocess; requires an interactive terminal.
+- `.claude/skills/migrate-from-v1/SKILL.md` — the skill that picks up after `migrate-v2.sh`.  Walks five phases: routing, owner+access, CLAUDE.local.md cleanup, container config, fork customizations.
+- `CHANGELOG.md` — release notes.  Key entries for this migration: 2.0.0 (architectural rewrite, 2026-04-22), 2.0.45 (`migrate-v2.sh` shipped, 2026-05-08), 2.0.48 (container config moved to DB, 2026-05-09), 2.0.54 (per-group model/effort, 2026-05-10), 2.0.63 (service-name slugging, 2026-05-15).
 
-## Customization inventory (the things that must survive)
+This file (`~/nanoclaw/V2_MIGRATION_PLAN.md`) is the only place that captures PG-specific decisions and credential paths.
 
-Built from `git log upstream/main..HEAD` + filesystem inspection.  This is the freeze list; every item must be re-verified after migrate.
+## State verified 2026-05-16
 
-### Code customizations
+| | |
+|---|---|
+| PG version | `1.2.52` (HEAD `7be06a7`, "memory-kernel git#main → ^1.16.1") |
+| PG working tree | clean |
+| Upstream tip | `2.0.63` (HEAD `975a2f0`, 2026-05-15) |
+| 2.x age on trunk | 24 days (2.0.0 landed 2026-04-22) |
+| Org rename | `qwibitai/nanoclaw` → `nanocoai/nanoclaw` (2026-05-10).  GitHub redirects; existing `upstream` remote still resolves. |
+| Drift | ~50 commits ahead, ~800 commits behind, ~470 files changed.  Numbers drift daily; re-verify before executing. |
+| Pre-staged `groups/<folder>/container.json` files | BACKFILL ONLY: 2.0.48 moved per-agent-group config into the `container_configs` DB table.  Files are read once on first start, ignored thereafter.  Post-migration config management is `ncl groups config update`. |
+| Pre-existing rollback tag | `pre-upgrade-1.2.35` (~40 days old).  Cut a fresh tag in Phase 1. |
 
-1. **Native MCP server registrations** in `agent-runner-src/index.ts`: `memory_kernel`, calendar, drive, dropbox, regrid (commits `6531694`, `835d383`).  *Hardest single item* because v2 removes per-group `agent-runner-src/` overlays.
-2. **Custom MCP server source files**: `calendar-mcp.ts`, `drive-mcp.ts`, `dropbox-mcp.ts`, `regrid-mcp.ts`, `ipc-mcp-stdio.ts`.
-3. **Per-instance container naming + stale reaper + heartbeats + IPC reset + send_file + channel crash protection** (`835d383`).
-4. **Telegram extensions**: whisper transcription, attachments, `sendFile`, document text extraction (`137845e`).
-5. **Channel-aware text styles** with dash and double-space rules (`d8ddb4a`).
-6. **Container system tooling, container skills, host utility scripts** (`1a98dfd`).
-7. **Installable skills**: `add-dropbox-tool`, `add-drive-tool`, `add-calendar-tool`, `add-regrid-tool` (own commits each).
-8. **The `firstReplyClosed` band-aid in `src/index.ts`** (uncommitted as of 2026-04-29).  Project memory `project_nanoclaw_option_b_todo.md` says this is a band-aid for a real problem; carry it across, do not lose it.
-9. **`upstream-drift-check.sh` + Monday 9am CST cron** (`3bebbed`).
-10. **CLAUDE.md upgrade discipline doc** (`b73472c`).
-11. **Power Glove env injection docs** (`06bf5a1`, `f2aba47`).
-12. **Whisper server binary gitignore** (`f01105d`).
+## Phase 0 gate status — all clear
 
-### Data / config (NOT touched by migrate, but must be preserved on rollback)
+Verified 2026-05-08, no regressions through 2026-05-16:
 
-- `groups/main/`, `groups/telegram_main/` (memory-kernel state, mempalace, attachments, transcripts, recipes, conversations).
-- `.env` (CONTAINER_IMAGE, CONTAINER_PREFIX, all credentials).
-- `~/.gmail-mcp/` AND `groups/telegram_main/.gmail-mcp/` (per memory `project_gmail_dual_path_gotcha.md`, both paths matter).
-- `.calendar-mcp/`, `.drive-mcp/`, `.dropbox-mcp-server/`, `.mempalace/` under `groups/`.
-- OneCLI vault contents.
+- [x] Jeeves identity Phase B/C done.  Andrea's fork `andreamelton02-stack/nanoclaw` exists; origin re-pointed; Monday 9am CST drift-check cron in place.
+- [x] Andrea Gmail flap stable.  No `invalid_grant` errors in the active log window.
+- [x] Wed 8pm CDT auto-delete cron ran (2026-04-30 01:00 UTC).  Verifier failure was unrelated to the archive.
+- [x] Option B IPC-pipe gate decided "no go".  Band-aid committed at `0ce6c18`.
+- [x] 2.0.x on upstream ≥ 14 days.  Cleared 2026-05-06; day 24 as of 2026-05-16.
 
----
+Proceed when Jon decides.
 
 ## Architectural watch-out
 
-The single most consequential v2 change for Power Glove is the loss of `agent-runner-src/` overlays.  In 1.x, each group has a writable copy of the agent-runner source where the memory_kernel + 4 native MCPs are registered.  In 2.0, all groups mount one shared, read-only agent-runner; per-group customization happens in composed `CLAUDE.md` fragments, not source code.  That means the MCP registrations have to either (a) move into the shared agent-runner (good for both bots, requires upstream-PR-or-fork-the-runner), or (b) become an `.mcp.json`-style config the runner reads at startup.  Decide this *before* running migrate, because the migration guide needs to capture the intent, not just the old code.
+The single most consequential v2 change for PG: in 1.x each group has a writable copy of `agent-runner-src/` where memory_kernel + 4 custom MCPs (calendar, drive, dropbox, regrid) are registered as native code.  In 2.0 all groups mount one shared, read-only agent-runner; per-group customization happens through composed `CLAUDE.md` fragments and per-agent-group config in the `container_configs` DB table.
+
+How the new flow handles this:
+
+1. **The 5 custom MCP servers get replaced**, not ported.  Per upstream's `/migrate-from-v1` skill: *"Source code (`src/*`, `container/agent-runner/src/*`) is NOT portable.  v2's architecture is fundamentally different.  Stash to `docs/v1-fork-reference/` with a README explaining what each file did.  Don't translate."*  The replacements are v2 skills, which PG already has installed: `/add-calendar-tool`, `/add-drive-tool`, `/add-dropbox-tool`, `/add-regrid-tool`.  For what `ipc-mcp-stdio.ts` did, v2 ships a built-in `nanoclaw` MCP server with `schedule_task`, `send_message`, etc.; verify it covers every IPC tool PG's bridge exposed before declaring done.
+2. **PG's env-injection divergence dies cleanly.**  In v1, `src/container-runner.ts` forwards third-party credentials (`DROPBOX_*`, `CALENDAR_IDS`, `REGRID_API_TOKEN`, `EBAY_*`) into containers via docker `-e` flags.  v2 routes all credentials through OneCLI vault.  `/init-onecli` migrates `.env` keys to the vault during Phase 5 below.  The container-runner.ts patches go to `docs/v1-fork-reference/` and are not re-applied.
+
+## Customization inventory
+
+Built from `git log upstream/main..HEAD` + filesystem inspection.  Each item must port forward, get re-implemented as a v2 skill, or be deliberately discarded.
+
+| # | Item | v2 destination |
+|---|---|---|
+| 1 | 5 native MCP server registrations in `agent-runner-src/index.ts` | REPLACED by v2 add-X-tool skills + built-in `nanoclaw` MCP.  Source stashed to `docs/v1-fork-reference/`. |
+| 2 | 5 custom MCP source files (calendar / drive / dropbox / regrid / ipc-mcp-stdio) | Same as #1.  Verify the v2 add-X-tool skills cover the multi-calendar list/search/create/update/delete tool surface PG's `calendar-mcp.ts` exposes. |
+| 3 | Per-instance container naming + stale reaper + heartbeats + IPC reset + send_file + channel crash protection (commit `835d383`) | VERIFY at Phase 6: v2 has its own container isolation via `messaging_groups.platform_id` + per-session DBs.  PG's `CONTAINER_PREFIX` work may be redundant.  If so, drop it; if not, re-implement at the v2 layer. |
+| 4 | Telegram extensions: whisper transcription, attachments, sendFile, document text extraction (commit `137845e`) | RE-INSTALL via `/add-telegram` (v2's `channels` branch), then layer extensions back.  Decision for whisper: PG's Groq-via-whisper-large-v3-turbo (custom port) vs v2's default `/add-voice-transcription` (OpenAI Whisper API).  Memory `project_whisper_transcription` documents the Groq cutover. |
+| 5 | Channel-aware text styles, dash + double-space rules (commit `d8ddb4a`) | Layer back via per-group `CLAUDE.local.md` after migration.  v2's composed CLAUDE.md model keeps the user-edit surface at `CLAUDE.local.md`. |
+| 6 | Container system tooling + container skills + host utility scripts (commit `1a98dfd`) | Container skills are copied automatically by `migrate-v2.sh` (the `container/skills/` step).  Host utility scripts: dedupe vs v2's `ncl` admin CLI; many may now be `ncl groups *` invocations. |
+| 7 | Installable skills: `add-dropbox-tool`, `add-drive-tool`, `add-calendar-tool`, `add-regrid-tool` (own commits each) | ALREADY INSTALLED in v2 form per Jon's skills list.  Re-verify each tool's behavior post-migration; dedupe any v1 leftovers. |
+| 8 | `firstReplyClosed` band-aid in v1 `src/index.ts` (committed at `0ce6c18`) | LIKELY OBSOLETE in v2: `src/index.ts` doesn't exist in the v1 shape.  v2 message routing is entity-model-based through `messages_in` / `messages_out`.  Test the failure mode against v2 before re-introducing.  If not reproducible, delete the TODO memory. |
+| 9 | `upstream-drift-check.sh` + Monday 9am CST cron (commit `3bebbed`) | KEEP.  Re-point at v2 trunk after migration.  Update the script's version-parsing if needed to handle `2.0.x` properly. |
+| 10 | CLAUDE.md upgrade discipline doc (commit `b73472c`) | KEEP, reconcile with v2's composed CLAUDE.md flow.  Edit `CLAUDE.local.md` or fragments, never `groups/<folder>/CLAUDE.md` (which v2 composes at container spawn). |
+| 11 | Power Glove env injection docs (commits `06bf5a1`, `f2aba47`) | DELETE after migration.  v2's OneCLI vault is the credential path; the docker `-e` divergence is gone. |
+| 12 | Whisper server binary gitignore (commit `f01105d`) | Likely irrelevant if Groq path is kept (no local binary).  Evaluate at Phase 6 item 4 decision. |
+
+### Data and credentials (NOT touched by migration; copied forward by the script)
+
+- `groups/main/`, `groups/telegram_main/` — copied forward by `migrate-v2.sh`.  v1 `CLAUDE.md` becomes v2 `CLAUDE.local.md` per group.
+- `.env` — merged into v2 `.env`.  Script never overwrites v2 keys.
+- Google OAuth file credentials — NOT in OneCLI's scope.  Per Jon's CLAUDE.md OAuth Lock section:
+  - Gmail: `~/.gmail-mcp/` (referenced by `GMAIL_CREDENTIALS_DIR`).  In v2 the container model needs a mount or env equivalent; the v2 `/add-gmail-tool` skill (see CHANGELOG 2.0.63: "gmail/gcal skills aligned with v2") should handle setup but the EXISTING refresh tokens must survive.  Verify path at Phase 4.
+  - Calendar: `~/nanoclaw/groups/telegram_main/.calendar-mcp/credentials.json` is the path the v1 container actually reads (HOME=/workspace/group resolution).  Migrating the group folder forward preserves this file in place.
+  - Drive: `~/.drive-mcp/` (host-home, like Gmail).
+- OneCLI vault contents — carried forward as-is (vault is host-level, not per-version).
 
 ---
 
-## Phase 0: Pre-conditions (do not start migration until all true)
+## Known issues to watch for
 
-Status as of 2026-05-08 (all clear — proceed to Phase 1 when ready):
+Compiled from upstream GitHub issues (state as of 2026-05-16) and Discord transcripts of `#v2-report-issues` + `#nanoclaw-v2-design-and-feedback` (April-May 2026).  Filtered to items with real PG relevance.
 
-- [x] Jeeves identity Phase B/C done (verified 2026-05-08).  Phase A: local git config = Andrea (`andrea.melton02@gmail.com` / `andreamelton02-stack`).  Phase B: gh auth done; Andrea's fork `andreamelton02-stack/nanoclaw` created 2026-05-07T15:49Z; origin re-pointed; all branches pushed (local HEAD = origin/main = `3a6ce9d`).  Phase C: `~/nanoclaw-jeeves/scripts/upstream-drift-check.sh` deployed with `FORK="andreamelton02-stack/nanoclaw"`; Monday 9am CST cron line in crontab; upgrade-discipline section mirrored into `~/nanoclaw-jeeves/CLAUDE.md` lines 42-49.
-- [x] Andrea Gmail flap stable (verified 2026-05-08).  619 successful Gmail deliveries in current log; 10+ deliveries in the last 5 hours (most recent `12:39:26 UTC`), zero errors after each.  Stale `invalid_grant` entries in `nanoclaw.error.log` are from before the 2026-04-17 16:12 credentials re-auth (`credentials.json.bak-2026-04-17-broken` is the artifact); not current state.  No wedge fingerprint (`final-sigterm timed out`) in 7-day journalctl window.  One unexplained restart at `2026-05-08 01:23:52 UTC`; Gmail delivery cadence and bot behavior continued normally through it, so does not block the gate (likely a manual `systemctl restart` ~53 min before the cleanup-commit deploy session at 02:16 UTC).
-- [x] Wed 8pm CDT auto-delete cron ran (2026-04-30 01:00 UTC) but failed verifier check #3 (`error log written after archive time`).  Verifier was overly strict — wedge errors are unrelated to the archive.  Archive being removed manually 2026-05-07.
-- [x] Option B IPC-pipe gate decision made: "no go" (kept band-aid).  Band-aid committed at `0ce6c18` 2026-05-07.  Working tree clean as of 2026-05-08; package.json edits and `VOICE_MODE_PLAN.md` landed at `2bedf6e`.
-- [x] 2.0.x has been on upstream `>= 14 days` from `2.0.0` date (`2026-04-22`).  Cleared 2026-05-06.  Day 16 as of 2026-05-08.
+### Pre-migration decisions (BEFORE Phase 1)
 
-All five gates cleared.  Phase 1 (snapshot + rollback prep) can begin whenever Jon decides.
+1. **`/remote-control` is REMOVED in v2.**  Verified by direct file scan: no `remote-control` skill file in `upstream/main`; only v1 CHANGELOG entries (1.2.14, 1.2.15) mention it.  PG's customization inventory item 6 ("host utility scripts") covers this.  Decide before Phase 1: re-implement as a host-side utility outside the container model, or live without.  *Source: upstream file scan; Discord 5/12 (tas) asked, no resolution captured.*
+2. **Auth-mode check.**  v2 setup requires `org:create_api_key` scope on Claude Code OAuth tokens.  If the host uses `claude setup-token` OAuth instead of `ANTHROPIC_API_KEY`, that scope may be missing.  Fall back to `ANTHROPIC_API_KEY` for v2.  *Source: Discord 4/20, Zettadata.*
+
+### During migration (Phase 3-4)
+
+3. **`/setup verify` reports success even when an adapter is stuck.**  It only checks env vars + process status, never tails error logs or probes adapter liveness.  Don't trust it in isolation.  Phase 4 Skill Phase 0's real Telegram message test is the verification that matters.  *Source: Discord 4/16, Ethan.*
+4. **Channel install skills nudge Claude to ask for secrets in chat.**  10 of 13 v2 channel-install skills use ambiguous ".env:" blocks that, in practice, lead Claude to prompt for tokens via free text (where they land in conversation history).  **Mitigation: paste tokens directly into v2 `.env` (`BOT_TOKEN=...`) BEFORE running `/add-telegram`** so Claude finds them already populated.  *Source: Discord 4/16-19, Ethan; confirmed Discord 4/18 with screenshots.*
+5. **OneCLI dashboard accessibility on a host that already has OneCLI.**  Jon's host already runs OneCLI.  `nanoclaw.sh` (and `migrate-v2.sh` via the bootstrap step) may remove/reinstall and rebind to the Docker gateway IP, breaking other host services that talked to OneCLI on loopback.  Fix reported in progress as of 4/22; verify upstream status before Phase 3.  *Source: Discord 4/22, evenisse; Gavriel "implementing a fix for this now."*
+
+### Post-migration operational (Phase 6-9 + the 72h verification window)
+
+6. **`ncl` may not be on PATH after `/update-nanoclaw` past 2.0.45.**  Workaround: add the v2 install's `node_modules/.bin` (or per-install bin) to PATH.  *Source: GitHub #2355.*
+7. **`groups/<folder>/CLAUDE.md` is REGENERATED every container spawn.**  The composer overwrites it.  Agents that edit it lose their changes silently.  Persona, preferences, and protocol go in `CLAUDE.local.md` (auto-loaded, not regenerated).  Tell agents this explicitly in `CLAUDE.local.md` so they don't try to save notes that vanish.  *Source: Discord 5/4, sshwarts.*
+8. **Scheduled tasks live in per-session `inbound.db`, NOT a central table.**  Tasks are at `data/v2-sessions/<agent_group_id>/<session_id>/inbound.db` with `kind='task'` rows.  **Deleting or rewiring agent groups during cleanup AFTER migration silently blows away the tasks.**  Before any `rm -rf` of session dirs, scan for `kind='task'` rows:  `pnpm exec tsx scripts/q.ts data/v2-sessions/<id>/<session>/inbound.db "SELECT id, content FROM messages_in WHERE kind='task'"`.  *Source: Discord 5/4, sshwarts.*
+9. **Attachments dir mount for Telegram.**  GitHub #2047 reports `data/attachments/` not mounted into container post-migration (filed against WhatsApp; same underlying mechanism applies to any attachment path).  At Phase 4 Skill Phase 3, verify that `groups/telegram_main/attachments/` mounts into the v2 container's expected path.  Smoke-test attachments + sendFile in Phase 7.  Issue is OPEN as of 2026-05-16, no PR in flight.  *Source: GitHub #2047.*
+10. **Outbound delivery failures are silently swallowed.**  Highest-impact open operational bug for PG.  Agent has no way to know a message was dropped.  During Phase 9 (72h verification), monitor `outbound.db` for `delivery_status='failed'` rows.  *Source: GitHub #2423.*
+11. **Double delivery when agent uses `send_message` MCP tool AND `<message>` blocks in the same turn.**  PG agent uses both patterns.  Community fix on `mshirel/nanoclaw` branch `fix/mcp-send-message-dedup` (deduplicate by destination, not content).  *Source: GitHub #2404.*
+12. **Telegram 4096-char message truncation.**  chat-sdk-bridge truncates long outbound messages.  PR #1900 added optional `maxTextLength` splitter; the `channels`-branch Telegram adapter factory must pass `maxTextLength: 4000` to engage it.  Verify before relying on long agent responses.  *Source: Discord 4/21, Dave PR #1900.*
+13. **`session_mode` auto-promotion may surprise.**  Router auto-promotes `shared` → `per-thread` when `adapter.supportsThreads && messaging_groups.is_group=1`.  Telegram supports threads (topics), so PG groups with topics enabled may end up `per-thread` even if configured `shared`.  Inspect with `ncl groups config get` post-migration.  *Source: Discord 5/4, sshwarts.*
+14. **`agent_destinations` is co-managed with `messaging_group_agents`.**  If hand-fixing the DB post-migration, use `createMessagingGroupAgent()` to insert both rows.  Raw SQL `UPDATE` on `mga` without updating destinations throws "unauthorized channel destination."  *Source: Discord 5/4, sshwarts.*
+
+### Rebuild cadence cheat sheet (post-migration iterative fixes)
+
+Three source locations, three different rebuild paths.  Mixing them up wastes the most time during iterative debugging:
+
+| Source location | Rebuild path |
+|---|---|
+| `container/agent-runner/src/*` | RO-mounted from host; Bun reads at each container start.  Edits → kill running container, next spawn picks up. |
+| `src/*` (host code) | `pnpm run build` + restart the host service unit. |
+| `Dockerfile` / pinned global pnpm packages | `./container/build.sh`.  Rare; only when changing apt/npm pinned versions. |
+
+*Source: Discord 5/4, sshwarts.*
 
 ---
 
-## Phase 1: Snapshot and rollback prep
+## Phase 1: Snapshot v1 (v1 stays read-only after this)
 
 ```bash
 cd ~/nanoclaw
 
-# Commit or stash the dirty src/index.ts.  Commit is preferred so it appears in the
-# customization extract.  Use a message that flags it as a band-aid.
-git add src/index.ts
-git commit -m "wip(group-queue): firstReplyClosed band-aid (Option B TODO)"
+# Confirm clean
+git status
 
-# Snapshot tags -- do BOTH:
-git tag pre-v2-migration-$(date +%Y%m%d)         # human-readable
-git tag -f rollback/powerglove-pre-v2 HEAD        # canonical name
+# Snapshot tags
+git tag pre-v2-migration-$(date +%Y%m%d)
+git tag -f rollback/powerglove-pre-v2 HEAD
 
-# Branch backup (so reflog loss can't kill us)
+# Backup branch
 git branch backup/pre-v2-$(date +%Y%m%d)
 
-# Push tags + backup branch to origin
+# Push tags and backup branch to origin (Jon's fork)
 git push origin --tags
 git push origin "backup/pre-v2-$(date +%Y%m%d)"
 
-# Snapshot the data dirs that migrate won't touch but a botched rollback could
+# Snapshot data dirs (defense in depth; migration shouldn't touch them)
 tar czf ~/nanoclaw-data-snapshot-$(date +%Y%m%d).tar.gz \
-  -C ~/nanoclaw groups data/sessions .env
+  -C ~/nanoclaw groups data .env
 
-# Snapshot the current Docker image so rollback doesn't require rebuild
-docker tag nanoclaw-agent:powerglove nanoclaw-agent:powerglove-pre-v2
+# Snapshot the current Docker image
+docker tag nanoclaw-agent:powerglove \
+  nanoclaw-agent:powerglove-pre-v2-$(date +%Y%m%d)
 ```
 
-Verify all five artifacts exist before continuing.
+Verify all five artifacts exist.  The v1 checkout is treated as **read-only** for the rest of the migration; `migrate-v2.sh` is built to never write to it.
 
----
-
-## Phase 2: Stop the bot cleanly
-
-Per feedback: stop only, never remove containers.
+## Phase 2: Clone v2 alongside v1
 
 ```bash
-# Stop the host service (whatever your nanoclaw service unit is named)
-sudo systemctl stop nanoclaw-powerglove   # adjust to actual unit name
-
-# Stop the agent container if running, do not rm it
-docker ps --filter "name=powerglove" --format '{{.Names}}' | xargs -r docker stop
+cd ~
+git clone https://github.com/nanocoai/nanoclaw.git nanoclaw-v2
+cd nanoclaw-v2
+jq -r '.version' package.json   # expect 2.0.63 or higher
 ```
 
-Wait for any in-flight conversation in the Telegram group to drain.  Confirm by tailing logs for ~2 minutes of silence.
+`migrate-v2.sh` auto-detects v1 by sibling-directory scan.  `~/nanoclaw` (v1) and `~/nanoclaw-v2` (v2) as siblings is the supported layout.  Setting `NANOCLAW_V1_PATH` is only needed if auto-detect picks the wrong directory.
 
----
+## Phase 3: Run migrate-v2.sh (from a separate terminal, NOT Claude Code)
 
-## Phase 3: Run the migrate skill (Extract phase)
+**The script cannot run inside Claude Code's bash tool.**  It checks `[ -t 0 ]` and `[ -t 1 ]` and aborts if either is false, because it needs interactive prompts (channel selection, service switchover) and streams real-time progress.
 
-The skill auto-tiers and produces a migration guide at `.nanoclaw-migrations/guide.md`.  Run it inside `~/nanoclaw`:
-
-```
-/migrate-nanoclaw
-```
-
-When the skill asks scope questions, answer:
-
-- Tier: **Complex** (do not let it talk you into Tier 2; 431 changed files is Tier 3 territory).
-- Existing guide at `.nanoclaw-migrations/guide.md` (per commit `83c1571`, an old pre-v2 snapshot already exists): choose **Re-extract from scratch**.  The old one predates final v2 trunk.
-- Skill exploration prompt: let it run haiku sub-agents in parallel.
-
-When the skill produces the draft guide, **do not proceed to Upgrade phase yet**.  Read the guide end-to-end and verify every item from the customization inventory above is captured with enough fidelity that a fresh Claude session could reapply it.  Particularly verify:
-
-- The MCP registrations describe the *intent* (which 5 MCP servers, what tools each exposes, env they need), not just the old `agent-runner-src/index.ts` file.
-- The `firstReplyClosed` band-aid is captured with its reason (Option B replacement pending).
-- The Telegram extensions are described per-feature, not as a code dump.
-
-If anything is thin, tell the migrate skill what to add.  This is the only artifact that survives, so trade tokens for completeness.
-
----
-
-## Phase 4: Architecture decision before Upgrade phase
-
-**LOCKED 2026-05-08.**  Going with Option A (per-group config).  v2 reads `groups/<folder>/container.json` (verified at `src/container-config.ts:60-64` on upstream main) — same intent as the original ".mcp.json" plan, correct filename is `container.json`.  The pre-staged files are committed:
-
-- `groups/main/container.json` — Power Glove: 7 servers (memory_kernel, calendar, gmail, drive, dropbox, regrid, mempalace), assistantName "Power Glove".
-- `groups/telegram_main/container.json` — Jeeves: 4 servers (memory_kernel, calendar, gmail, drive), assistantName "jeeevo-bot".
-
-These files sit dormant under v1 and are read by v2 once migration completes.
-
-### Phase 4 sub-decisions still open at migration-time
-
-1. **MCP server binary placement.**  Today the binaries (`calendar-mcp.js`, `drive-mcp.js`, `dropbox-mcp.js`, `regrid-mcp.js`, `ipc-mcp-stdio.ts`) live in `data/sessions/telegram_main/agent-runner-src/`, which v2 deletes.  The pre-staged container.json points at `/workspace/agent/mcp-servers/<name>.js` — i.e. a directory mounted from a stable host-side location.  During migrate's Upgrade phase, copy the binaries to `~/nanoclaw/mcp-servers/` (and `~/nanoclaw-jeeves/mcp-servers/` for Jeeves's 3) and add an `additionalMounts` entry in container.json mapping `${REPO_ROOT}/mcp-servers` → `/workspace/agent/mcp-servers` (read-only).
-
-2. **Power Glove credential dirs.**  PG today reads `~/.calendar-mcp/`, `~/.gmail-mcp/`, `~/.drive-mcp/` (host-home).  Container.json sets `HOME=/workspace/group`, expecting the credentials inside the group folder.  Two options at migration:
-   - (a) Move host-home dirs into `~/nanoclaw/groups/main/.calendar-mcp/` etc., matching Jeeves's pattern.  Cleanest.
-   - (b) Add `additionalMounts` from `${HOME}/.calendar-mcp` → `/workspace/group/.calendar-mcp` for each, leaving host paths in place.  Less risk.
-   Recommend (a); the move is one-shot.
-
-3. **Secrets in env.**  v2 routes credentials through OneCLI vault (`src/container-runner.ts:455-461` enforces `OneCLI gateway not applied — refusing to spawn container without credentials`).  Pre-staged container.json carries empty env objects for `dropbox` and `regrid` for that reason.  Run `/init-onecli` during Phase 5 to migrate `DROPBOX_*` and `REGRID_API_TOKEN` from `.env` to the vault before first agent spawn.
-
-4. **`ipc-mcp-stdio.ts` (the host-IPC bridge).**  This isn't in the staged container.json — v2 already provides the `nanoclaw` built-in MCP server (`docs/SPEC.md:614-630`) covering `schedule_task`, `send_message`, etc.  Confirm during migration that v2's built-in covers every IPC tool the v1 bridge exposed; if not, port the missing ones into a v2 skill rather than re-introducing the stdio bridge.
-
----
-
-## Phase 5: Run the migrate skill (Upgrade phase)
-
-```
-/migrate-nanoclaw   # second run -- choose "Skip to upgrade"
-```
-
-The skill creates a worktree at `.upgrade-worktree/`, checks out clean upstream, and reapplies the guide.  Watch for:
-
-- Telegram code: it will not be in trunk.  Skill must call `/add-telegram` (see Phase 6) or note it as a follow-up.
-- Bun-incompatible deps: `googleapis`, `google-auth-library`, anything Node-native.  The skill should flag these; if it doesn't, ask it to.
-- `.env` keys that no longer exist in 2.0 (e.g. `CONTAINER_IMAGE` may be replaced).
-
-When the worktree validates, the skill swaps it in.  Do not delete `.upgrade-worktree` immediately; keep it for one week as a side-by-side reference.
-
----
-
-## Phase 6: Re-install Telegram channel
-
-```
-/add-telegram
-```
-
-Re-add the Telegram channel from the `channels` branch.  Then reapply the Telegram-specific extensions from the customization inventory (whisper, attachments, sendFile, document text extraction) on top of the freshly-installed channel.
-
----
-
-## Phase 7: Re-integrate native MCP servers (per Phase 4 decision)
-
-Assuming Option A:
-
-- Copy the 5 `.ts` files into the v2-appropriate location for per-group MCP servers.
-- Build them (Bun-compatible -- verify `googleapis` works under Bun, fall back to standalone Node spawning if not).
-- Register in the per-group MCP config.
-- Re-point `MEMORY_DIR` env to the new container path for memory-kernel (was `/workspace/group/memory-kernel`; verify v2's mount path).
-
----
-
-## Phase 8: Re-apply remaining customizations
-
-Walk the customization inventory items 3, 5, 6, 7, 8, 9, 10, 11, 12 in order.  Each gets re-applied per the migration guide.  Two specifically need attention:
-
-- **Item 3 (per-instance container naming + stale reaper):** v2 may have its own container isolation model now.  Check whether your `CONTAINER_PREFIX` work is redundant.  If yes, drop it.  If no, port it.
-- **Item 8 (`firstReplyClosed` band-aid):** the file path may have changed.  If v2 restructured `src/group-queue.ts`, the band-aid may not even apply.  Test this first; if it does not reproduce in v2, *delete the band-aid* and the related TODO memory.
-
----
-
-## Phase 9: Smoke test (host-side, before re-enabling Telegram)
+Open a separate terminal (or exit Claude Code first):
 
 ```bash
-# Build the new image
-docker build -t nanoclaw-agent:powerglove .   # adjust per v2 build instructions
-
-# Start with a private test channel, NOT the live Telegram group
-# Verify:
-# - Container starts, Bun runtime healthy
-# - memory_kernel MCP responds to mk_recall
-# - Each of the 4 other MCPs responds to a basic tool call
-# - inbound.db and outbound.db both created
-# - OneCLI credentials inject correctly (no API key in container env)
-# - send_file works
-# - Whisper transcription works on a test voice note
+cd ~/nanoclaw-v2
+bash migrate-v2.sh
 ```
 
-Only after all green, point the live Telegram channel at it.
+The script runs these steps, with per-step output at `logs/migrate-steps/<name>.log` and a summary at `logs/setup-migration/handoff.json`:
+
+1. **Bootstrap** (`setup.sh`): installs Node, pnpm, deps.
+2. **Find v1**: locates `~/nanoclaw` via sibling scan.
+3. **Validate v1 DB**: confirms `registered_groups` table is present in `store/messages.db`.
+4. **Env merge**: copies missing keys from v1 `.env` into v2 `.env`.  Never overwrites v2 keys.
+5. **DB seed**: migrates `registered_groups` rows into v2's `agent_groups` / `messaging_groups` / `messaging_group_agents` tables.  Maps v1's `trigger_pattern` regex to v2's four orthogonal columns (`engage_mode`, `engage_pattern`, `sender_scope`, `ignored_message_policy`).  JID decomposition: v1's `tg:67890` becomes `channel_type='telegram'`, `platform_id='telegram:67890'`.
+6. **Groups copy**: copies group folders.  v1 `CLAUDE.md` becomes v2 `CLAUDE.local.md`.
+7. **Sessions copy**: copies session data including Claude Code memory and JSONL transcripts (conversation continuity).
+8. **Tasks port**: v1 `scheduled_tasks` rows become v2 `messages_in` rows with `kind='task'` in each session's `inbound.db`.  v1 `schedule_type`+`schedule_value` maps to a single cron string.
+9. **Channel select + install**: interactive multi-select (clack) for channels detected in v1.  **For PG, choose Telegram only.**  Skill installs from v2's `channels` branch via `git fetch origin channels && git show channels:src/channels/telegram.ts > src/channels/telegram.ts`.
+10. **Channel auth copy**: copies session-state files for installed channels (Telegram session/bot state).
+11. **Container skills copy**: ports `container/skills/*` from v1.
+12. **Container image build**: builds the v2 agent container.
+13. **Service switchover prompt**: offers to stop v1's service and start v2's.  Accept the offer.
+
+The script is idempotent.  If anything fails mid-way, fix the cause and re-run.  For development re-testing, `bash migrate-v2-reset.sh` wipes v2 state back to clean.
+
+When it finishes, the script writes `logs/setup-migration/handoff.json` and exits.
+
+## Phase 4: Resume in Claude Code via /migrate-from-v1
+
+Open Claude Code with cwd at `~/nanoclaw-v2`:
+
+```
+/migrate-from-v1
+```
+
+The skill reads `logs/setup-migration/handoff.json` and walks five phases.  Each has PG-specific specifics:
+
+### Skill Phase 0: get v2 routing real messages
+
+Triages any failed `migrate-v2.sh` steps that block routing, then completes the service switchover.
+
+Service unit names are now **per-install slugged** (upstream 2.0.63):
+- macOS launchd: `com.nanoclaw.<sha1(projectRoot)[:8]>`
+- Linux systemd: `nanoclaw-<slug>.service`
+
+Find PG's v2 unit name:
+
+```bash
+cd ~/nanoclaw-v2
+source setup/lib/install-slug.sh && systemd_unit
+```
+
+Send a real test message to the live Telegram group.  Confirm v2 responds.  If it doesn't, **do not proceed** — diagnose from `logs/nanoclaw.log` and fix before deeper steps.
+
+### Skill Phase 1: owner and access
+
+Skill seeds the owner row in `user_roles`.  For Telegram, owner format is `telegram:<numeric_user_id>`.  Jon's Telegram user ID appears in v1's message history; the skill should auto-suggest it.  Confirm via the `AskUserQuestion` prompt.
+
+Access policy: the script defaulted `messaging_groups.unknown_sender_policy='public'` for switchover testing.  Decide whether to tighten:
+- `public` — anyone can message the bot (current).  Matches v1's pattern-based trigger if the trigger was permissive.
+- `known_users_only` — only `agent_group_members` rows can trigger.  Matches v1 sender allowlist behavior.
+- `request_approval` — unknown senders trigger an owner-approval flow.
+
+If picking 2 or 3, the skill auto-seeds known users from v1's `messages` table (distinct senders per group).  Review and deselect any that shouldn't be allowed before committing.
+
+### Skill Phase 2: CLAUDE.local.md cleanup
+
+The skill diffs each `CLAUDE.local.md` (which is v1's old `CLAUDE.md` copied verbatim) against the v1 template it was based on and strips stock boilerplate that v2's composed fragments now handle.  Review each diff before accepting.
+
+**PG-specific**: the v1 root `CLAUDE.md` "OAuth Lock" section is operational policy and must survive the cleanup.  Verify the skill preserves it.  Same for the "Power Glove env injection (fork divergence from upstream)" section, though after Phase 5 (OneCLI migration) the env-injection text becomes obsolete and can be deleted.
+
+### Skill Phase 3: container config
+
+Skill reads `container.json` files (pre-staged from earlier work) and validates `additionalMounts` host paths.  Post-2.0.48 these files matter only for first-start backfill; afterwards, edits go through `ncl groups config update`.
+
+**PG-specific verification**:
+- `groups/main/container.json` must mount `~/.gmail-mcp/` and `~/.drive-mcp/` (host-home Google OAuth credentials).
+- `groups/telegram_main/container.json` must preserve the calendar credentials path PG actually reads, namely `groups/telegram_main/.calendar-mcp/credentials.json`.  Since the group folder is copied forward as a tree, this should naturally land in `~/nanoclaw-v2/groups/telegram_main/.calendar-mcp/`.
+- After both first agent spawns, verify backfill landed in DB: `ncl groups config get main` and `ncl groups config get telegram_main`.  All subsequent management is via the DB-backed CLI; the JSON files are now historical.
+
+### Skill Phase 4: fork customizations
+
+The skill runs `git log upstream/main..HEAD` on v1 to enumerate ahead-commits, presents them, and asks how to handle.  **For PG, choose "Copy portable items + stash source to docs/v1-fork-reference/."**
+
+Portable items (the skill handles the copy):
+- `container/skills/*` — also covered by `migrate-v2.sh` Phase 3 step 11.
+- `.claude/skills/*` — dedupe against v2's existing copies of `add-calendar-tool`, `add-drive-tool`, `add-dropbox-tool`, `add-regrid-tool`.
+- `docs/*` — including this plan file (move/copy this `V2_MIGRATION_PLAN.md` into the v2 checkout as historical record).
+
+Non-portable items (stash only, do not translate):
+- 5 custom MCP server files at `data/sessions/telegram_main/agent-runner-src/` (calendar / drive / dropbox / regrid / ipc-mcp-stdio).
+- `src/container-runner.ts` env-injection patches.
+- `src/index.ts` `firstReplyClosed` band-aid.
+- Any other `src/*` or `container/agent-runner/src/*` edits visible in `git log upstream/main..HEAD`.
 
 ---
 
-## Phase 10: Catch up to current upstream patches
+## Phase 5: Migrate credentials to OneCLI vault
 
-After migrate succeeds, you will be on `2.0.0` (or whatever base the migrate skill used).  Bring forward to current `2.0.x` with the patch path:
+```
+/init-onecli
+```
+
+This skill installs OneCLI Agent Vault (if missing) and migrates `.env` keys into the vault.  Verify:
+
+```bash
+# Health
+curl -s http://127.0.0.1:10254/health | jq .
+
+# PG-specific keys present
+onecli secrets list | grep -E '(DROPBOX|CALENDAR_IDS|REGRID|EBAY)'
+```
+
+Then set the auto-created agents' secret mode (they default to `selective`, which means no secrets attached even if matching secrets exist):
+
+```bash
+onecli agents set-secret-mode --mode all
+```
+
+After this, the PG-specific `src/container-runner.ts` env-injection patches are dead.  Confirm by running PG's MCP tools end-to-end in Phase 7.
+
+## Phase 6: Re-evaluate customizations against v2
+
+Walk the customization inventory items 3, 5, 6, 8, 9, 10, 11, 12.  For each, decide: still needed, redundant under v2, or needs re-implementation.
+
+- **Item 3 (container isolation)**: v2 uses entity-model isolation via per-session DBs and `messaging_groups.platform_id`.  PG's CONTAINER_PREFIX, stale-reaper, heartbeat work is most likely redundant.  Drop it; if a specific scenario isn't covered, re-implement at the v2 layer.
+- **Item 4 (Telegram extensions, decision)**: whisper choice — keep Groq via custom skill, or default OpenAI Whisper.  Decide based on cost / latency / accuracy trade-offs.  Memory `project_whisper_transcription` has the original Groq cutover context.
+- **Item 5 (text styles)**: layer per-group `CLAUDE.local.md` rules.
+- **Item 6 (container skills + host utilities)**: dedupe vs `ncl` admin CLI.  Many v1 host utilities are now `ncl groups *` invocations.
+- **Item 8 (firstReplyClosed band-aid)**: test the failure mode against v2; if not reproducible, delete the TODO memory.
+- **Item 9 (drift-check cron)**: re-point script at v2 trunk; verify version-parsing handles `2.0.x`.
+- **Item 10 (CLAUDE.md upgrade discipline)**: reconcile with v2's composed CLAUDE.md; the rule becomes "edit `CLAUDE.local.md`, never `groups/<folder>/CLAUDE.md`".
+- **Item 11 (env-injection docs)**: delete.
+- **Item 12 (whisper gitignore)**: irrelevant if Groq path is kept; evaluate.
+
+## Phase 7: Smoke test on Telegram
+
+Send these messages to the live PG group and verify each works.  Each tests a specific subsystem:
+
+| Test | Subsystem |
+|---|---|
+| Plain message ("hi") | Entity-model routing, `messages_in` → agent → `messages_out` round-trip |
+| Voice note | Transcription path (Groq or OpenAI per Phase 6 item 4) |
+| Image | image-vision skill (if installed) |
+| "What's on my calendar today?" | Calendar via `/add-calendar-tool` skill |
+| "Search Drive for X" | Drive MCP |
+| "Parcel info for <address>" | Regrid MCP |
+| "Save this to Dropbox" | Dropbox MCP |
+| "Remind me in 1 minute to test" | Task scheduling (v2 `messages_in` `kind='task'`) |
+| Wait for the task to fire | Session resumption + container wake on `process_after` |
+
+If anything fails, diagnose via:
+- `~/nanoclaw-v2/logs/nanoclaw.log` (host)
+- `data/v2-sessions/<session_id>/inbound.db` + `outbound.db` (SQLite via `pnpm exec tsx scripts/q.ts <db> "<query>"`)
+- `ncl sessions get <session_id>` (admin CLI; group-scoped, requires owner role for cross-group reads)
+- `ncl groups config get <folder>` to inspect what landed in `container_configs`
+
+## Phase 8: Catch up to current 2.0.x patches
 
 ```
 /update-nanoclaw
 ```
 
-Verify version: `jq -r '.version' package.json` should match upstream.
-
----
-
-## Phase 11: Verification window
-
-Run for 72 hours minimum before touching Jeeves.  Watch:
-
-- `~/nanoclaw/groups/telegram_main/logs/` for new error patterns.
-- TeeJS dashboard if installed (per memory `reference_nanoclaw_dashboard.md`).
-- The Telegram group itself (Jon-facing, so you will see drift fast).
-- Drift cron output Monday 9am CST should now report 0-commit drift.
-
-Bugs in the first 72h: prioritize root cause over rollback.  Rollback is for showstoppers only (bot down, data loss, credential leak).
-
----
-
-## Rollback procedure (if showstopper before Phase 11 ends)
+Brings PG forward from the v2 base version that `migrate-v2.sh` used to current upstream.  Verify:
 
 ```bash
-sudo systemctl stop nanoclaw-powerglove
-docker ps --filter "name=powerglove" --format '{{.Names}}' | xargs -r docker stop
-
-cd ~/nanoclaw
-git reset --hard rollback/powerglove-pre-v2
-
-# Restore data only if migrate touched it (it shouldn't, but verify)
-# tar xzf ~/nanoclaw-data-snapshot-YYYYMMDD.tar.gz -C ~/nanoclaw
-
-docker tag nanoclaw-agent:powerglove-pre-v2 nanoclaw-agent:powerglove
-sudo systemctl start nanoclaw-powerglove
+diff \
+  <(jq -r '.version' ~/nanoclaw-v2/package.json) \
+  <(git -C ~/nanoclaw-v2 show upstream/main:package.json | jq -r '.version')
 ```
 
-The `git reset --hard` is the only destructive action; it is safe because of the backup branch and snapshot tag pushed to origin in Phase 1.
+Should be empty (versions match).
+
+## Phase 9: 72-hour verification window
+
+Run for ≥72 hours before touching Jeeves.  Watch:
+
+- `~/nanoclaw-v2/logs/nanoclaw.log` for new error patterns.
+- TeeJS dashboard (per memory `reference_nanoclaw_dashboard`).
+- The Telegram group itself.
+- Drift cron output Monday 9am CST: should report ~0-commit drift now.
+- OneCLI vault health: `curl -s http://127.0.0.1:10254/health`.
+
+Bugs in the first 72h: prioritize root-cause analysis over rollback.  Rollback is for showstoppers only (bot down, data loss, credential leak).
 
 ---
 
-## Out of scope for this plan
+## Rollback (anytime before Phase 9 completes)
 
-- Touching Jeeves.  Jeeves migrates only after Power Glove is stable for 1+ weeks.  Andrea-facing reliability matters more than catch-up speed.
-- Touching the `channels` branch repo or upstreaming any PRs.  Out of scope; can be follow-up after both bots are on 2.x.
-- Migrating any in-flight feature work (Option B IPC-pipe gate).  Phase 0 requires it be settled first.
+v1 is untouched throughout the migration.  Rolling back is a service restart:
+
+```bash
+# Stop v2 (find unit name first)
+cd ~/nanoclaw-v2 && source setup/lib/install-slug.sh
+V2_UNIT=$(systemd_unit)
+sudo systemctl stop "$V2_UNIT"
+
+# Start v1 (older unit name, pre-2.0.63 slugging)
+sudo systemctl start nanoclaw   # or whatever v1's unit name actually is on this host
+```
+
+Verify v1 resumes: tail `~/nanoclaw/logs/nanoclaw.log`, send a test message to the Telegram group.
+
+Only if `migrate-v2.sh` did something weird and v1 isn't healthy after restart: restore the Phase 1 tarball over `~/nanoclaw`.  This should never be needed because `migrate-v2.sh` never writes to v1.
+
+---
+
+## Phase 10: Jeeves migration (out of scope; separate plan, after PG stable ≥ 1 week)
+
+Jeeves migrates only after Power Glove is stable for at least one week post-migration.  Andrea-facing reliability matters more than catch-up speed.
+
+The Jeeves plan follows the same shape with these substitutions:
+
+- `~/nanoclaw-jeeves` instead of `~/nanoclaw`
+- `~/nanoclaw-jeeves-v2` instead of `~/nanoclaw-v2`
+- Andrea's GCP project `501488433537` / `jeeves-490713` — DO NOT cross with Jon's `523151035551` per memory `feedback_account_separation`
+- Andrea's GitHub fork `andreamelton02-stack/nanoclaw` instead of Jon's
+- Jeeves's 3 MCP servers (calendar, gmail, drive — no dropbox, no regrid, no eBay)
+- Andrea-scoped OneCLI vault
+
+A separate `V2_MIGRATION_PLAN.md` will live in `~/nanoclaw-jeeves` when it's time.
+
+## Out of scope for THIS plan
+
+- Touching the `channels` branch repo or upstreaming any PRs to nanocoai.
+- In-flight feature work (Option B IPC-pipe gate decided "no go").
+- Apple Container migration (PG is Docker; v2 keeps Docker as default).
+- Anything WhatsApp-related (per memory `feedback_no_whatsapp`).
