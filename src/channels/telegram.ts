@@ -1,7 +1,7 @@
 import { Api, Bot, InputFile } from 'grammy';
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
-import { readFile, writeFile, unlink, mkdtemp } from 'node:fs/promises';
+import { readFile, writeFile, mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -181,7 +181,7 @@ interface CodeSegment {
  * Split a message into text and code block segments.
  * Code blocks (``` delimited) are extracted so they can be sent as file attachments.
  */
-function splitCodeBlocks(text: string): (TextSegment | CodeSegment)[] {
+function _splitCodeBlocks(text: string): (TextSegment | CodeSegment)[] {
   const segments: (TextSegment | CodeSegment)[] = [];
   const regex = /```(\w*)\n([\s\S]*?)```/g;
   let lastIndex = 0;
@@ -212,7 +212,7 @@ function splitCodeBlocks(text: string): (TextSegment | CodeSegment)[] {
 }
 
 /** Map common language identifiers to file extensions. */
-function langToExt(lang: string): string {
+function _langToExt(lang: string): string {
   const map: Record<string, string> = {
     typescript: 'ts',
     ts: 'ts',
